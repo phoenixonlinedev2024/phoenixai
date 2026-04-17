@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "jarvis-openclaw"
+version = "1.0.0"
+description = "JARVIS — Just A Rather Very Intelligent System for OpenClaw. Universal AI agent with voice, self-learning, and 24/7 autonomy."
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    # Anthropic Claude API
+    "anthropic>=0.40.0",
+    # Async & scheduling
+    "aiohttp>=3.10.0",
+    "aiofiles>=23.2.0",
+    "apscheduler>=3.10.0",
+    # Web & search
+    "requests>=2.32.0",
+    "beautifulsoup4>=4.12.0",
+    "duckduckgo-search>=6.0.0",
+    # Voice — Speech-to-Text
+    "SpeechRecognition>=3.10.0",
+    "pyaudio>=0.2.14",
+    # Voice — Text-to-Speech
+    "pyttsx3>=2.90",
+    "elevenlabs>=1.5.0",
+    # Data & memory
+    "SQLAlchemy>=2.0.0",
+    "pydantic>=2.7.0",
+    # Code execution sandbox
+    "RestrictedPython>=7.0",
+    # System utilities
+    "psutil>=5.9.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
+    "watchdog>=4.0.0",
+    # HTTP server for API mode
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "black", "ruff"]
+
+[project.scripts]
+jarvis = "jarvis.main:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jarvis*"]
