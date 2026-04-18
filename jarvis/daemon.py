@@ -1,36 +1,43 @@
-"""JARVIS 24/7 daemon — background service, API server, voice loop, and scheduler."""
+"""JARVIS 24/7 daemon — API server, WebSocket, voice loop, scheduler, bots, monitor."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import signal
-import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
 from jarvis.config import cfg
+from jarvis.export import export_markdown, export_pdf
+from jarvis.monitor import ProactiveMonitor
 from jarvis.personality import JARVIS_VOICE_INTRO, JARVIS_WAKE_RESPONSES
 
 if TYPE_CHECKING:
     from jarvis.core import Jarvis
 
+WEB_UI_DIR = Path(__file__).parent / "web_ui"
+
 
 # ---------------------------------------------------------------------------
-# FastAPI REST interface
+# FastAPI app
 # ---------------------------------------------------------------------------
 
 def create_app(jarvis: "Jarvis") -> FastAPI:
     app = FastAPI(
         title="JARVIS — OpenClaw AI",
-        description="Just A Rather Very Intelligent System REST API",
-        version="1.0.0",
+        description="Just A Rather Very Intelligent System REST + WebSocket API",
+        version="2.0.0",
     )
     app.add_middleware(
         CORSMiddleware,
@@ -39,10 +46,12 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
         allow_headers=["*"],
     )
 
+    # ── Pydantic models ──────────────────────────────────────────────────
+
     class ChatRequest(BaseModel):
         message: str
-        session_id: str | None = None
         voice_mode: bool = False
+        profile: str = "default"
 
     class ChatResponse(BaseModel):
         response: str
@@ -54,9 +63,27 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
         cron: str
         prompt: str
 
+    class MonitorRequest(BaseModel):
+        name: str
+        target_type: str  # url | file
+        target: str
+        action: str
+
+    class ProfileRequest(BaseModel):
+        profile: str
+
+    # ── REST endpoints ───────────────────────────────────────────────────
+
+    @app.get("/")
+    async def root():
+        html_path = WEB_UI_DIR / "index.html"
+        if html_path.exists():
+            return HTMLResponse(html_path.read_text())
+        return {"message": "JARVIS API online. See /docs."}
+
     @app.get("/health")
     async def health():
-        return {"status": "online", "jarvis": "operational", "timestamp": datetime.now(timezone.utc).isoformat()}
+        return {"status": "online", "timestamp": datetime.now(timezone.utc).isoformat()}
 
     @app.get("/status")
     async def status():
@@ -64,6 +91,7 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(req: ChatRequest):
+        jarvis.set_profile(req.profile)
         try:
             response = await jarvis.chat(req.message, voice_mode=req.voice_mode)
             return ChatResponse(
@@ -84,6 +112,11 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
         jarvis.new_session()
         return {"message": "New session started.", "session_id": jarvis._session_id}
 
+    @app.post("/profile")
+    async def set_profile(req: ProfileRequest):
+        jarvis.set_profile(req.profile)
+        return {"profile": req.profile}
+
     @app.get("/memory/facts")
     async def get_facts():
         return {"facts": jarvis.memory.all_facts()}
@@ -92,16 +125,19 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
     async def get_lessons():
         return {"lessons": jarvis.memory.get_lessons(limit=50)}
 
+    @app.get("/memory/gaps")
+    async def get_gaps():
+        return {"gaps": jarvis.memory.get_open_gaps()}
+
+    @app.get("/memory/semantic")
+    async def semantic_recall(q: str, n: int = 5):
+        return {"results": jarvis.semantic.recall(q, n=n)}
+
     @app.get("/tools")
     async def list_tools():
         return {
             "tools": [
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "category": t.category,
-                    "dynamic": t.dynamic,
-                }
+                {"name": t.name, "description": t.description, "category": t.category, "dynamic": t.dynamic}
                 for t in jarvis.registry.all()
             ]
         }
@@ -109,11 +145,54 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
     @app.post("/schedule")
     async def schedule_task(req: ScheduleRequest):
         jarvis.memory.add_scheduled_task(req.name, req.cron, req.prompt)
-        return {"message": f"Task '{req.name}' scheduled with cron: {req.cron}"}
+        return {"message": f"Task '{req.name}' scheduled ({req.cron})."}
 
     @app.get("/schedule")
     async def list_scheduled():
         return {"tasks": jarvis.memory.get_scheduled_tasks()}
+
+    @app.post("/monitor")
+    async def add_monitor(req: MonitorRequest):
+        jarvis.memory.add_monitor_target(req.name, req.target_type, req.target, req.action)
+        return {"message": f"Monitoring '{req.name}' ({req.target_type}: {req.target})."}
+
+    @app.get("/monitor")
+    async def list_monitors():
+        return {"targets": jarvis.memory.get_monitor_targets()}
+
+    @app.post("/export/markdown")
+    async def export_md():
+        msg = export_markdown(jarvis.memory, jarvis._session_id)
+        return {"message": msg}
+
+    @app.post("/export/pdf")
+    async def export_pdf_ep():
+        msg = export_pdf(jarvis.memory, jarvis._session_id)
+        return {"message": msg}
+
+    # ── WebSocket streaming endpoint ─────────────────────────────────────
+
+    @app.websocket("/ws")
+    async def websocket_chat(ws: WebSocket):
+        await ws.accept()
+        try:
+            while True:
+                data = await ws.receive_json()
+                message = data.get("message", "")
+                profile = data.get("profile", "default")
+                jarvis.set_profile(profile)
+
+                async for token in jarvis.stream_chat(message):
+                    await ws.send_json({"type": "token", "content": token})
+
+                await ws.send_json({"type": "done"})
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            try:
+                await ws.send_json({"type": "error", "content": str(exc)})
+            except Exception:
+                pass
 
     return app
 
@@ -129,13 +208,10 @@ class JarvisScheduler:
 
     def start(self) -> None:
         self._load_tasks()
-        # Periodic self-reflection
         self.scheduler.add_job(
-            self._run_reflection,
-            "interval",
+            self._run_reflection, "interval",
             hours=cfg.REFLECTION_INTERVAL_HOURS,
-            id="self_reflection",
-            replace_existing=True,
+            id="self_reflection", replace_existing=True,
         )
         self.scheduler.start()
         print(f"[JARVIS Scheduler] Running. Reflection every {cfg.REFLECTION_INTERVAL_HOURS}h.")
@@ -146,38 +222,34 @@ class JarvisScheduler:
                 self.scheduler.add_job(
                     self._run_task,
                     CronTrigger.from_crontab(task["cron"]),
-                    id=task["name"],
-                    args=[task["name"], task["prompt"]],
-                    replace_existing=True,
+                    id=task["name"], args=[task["name"], task["prompt"]], replace_existing=True,
                 )
-                print(f"[JARVIS Scheduler] Loaded task: {task['name']} ({task['cron']})")
+                print(f"[JARVIS Scheduler] Loaded: {task['name']} ({task['cron']})")
             except Exception as exc:
-                print(f"[JARVIS Scheduler] Failed to load task {task['name']}: {exc}")
+                print(f"[JARVIS Scheduler] Failed to load {task['name']}: {exc}")
 
     async def _run_task(self, name: str, prompt: str) -> None:
-        print(f"[JARVIS Scheduler] Running task: {name}")
+        print(f"[JARVIS Scheduler] Running: {name}")
         try:
             result = await self.jarvis.chat(prompt)
-            print(f"[JARVIS Scheduler] Task '{name}' result: {result[:200]}")
+            print(f"[JARVIS Scheduler] '{name}': {result[:200]}")
             now = datetime.now(timezone.utc).isoformat()
             self.jarvis.memory.update_task_run(name, now, now)
         except Exception as exc:
-            print(f"[JARVIS Scheduler] Task '{name}' error: {exc}")
+            print(f"[JARVIS Scheduler] '{name}' error: {exc}")
 
     async def _run_reflection(self) -> None:
-        print("[JARVIS] Running scheduled self-reflection...")
-        result = await self.jarvis.learner.reflect(
-            self.jarvis._session_transcript, self.jarvis.client
-        )
+        print("[JARVIS] Scheduled self-reflection running...")
+        result = await self.jarvis.learner.reflect(self.jarvis._session_transcript, self.jarvis.client)
         n = len(result.get("lessons", []))
-        print(f"[JARVIS] Reflection complete. {n} new lesson(s) stored.")
+        print(f"[JARVIS] Reflection done. {n} new lesson(s).")
 
     def stop(self) -> None:
         self.scheduler.shutdown(wait=False)
 
 
 # ---------------------------------------------------------------------------
-# Voice loop (runs in background thread)
+# Voice loop
 # ---------------------------------------------------------------------------
 
 class VoiceLoop:
@@ -194,8 +266,12 @@ class VoiceLoop:
 
     def _get_stt(self):
         if self._stt is None:
-            from jarvis.voice.speech_to_text import STTEngine
-            self._stt = STTEngine()
+            if cfg.STT_ENGINE == "whisper":
+                from jarvis.voice.whisper_stt import WhisperSTT
+                self._stt = WhisperSTT(model_size=cfg.WHISPER_MODEL)
+            else:
+                from jarvis.voice.speech_to_text import STTEngine
+                self._stt = STTEngine()
         return self._stt
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -204,18 +280,16 @@ class VoiceLoop:
         tts = self._get_tts()
         stt = self._get_stt()
         tts.speak(JARVIS_VOICE_INTRO)
-        stt.start_listening(lambda transcript: self._on_transcript(transcript, loop))
+        stt.start_listening(lambda t: self._on_transcript(t, loop))
 
     def _on_transcript(self, transcript: str, loop: asyncio.AbstractEventLoop) -> None:
+        import random
         tts = self._get_tts()
         if transcript == "_wake_only_":
-            import random
             tts.speak(random.choice(JARVIS_WAKE_RESPONSES))
             return
         print(f"[JARVIS Voice] Heard: {transcript}")
-        future = asyncio.run_coroutine_threadsafe(
-            self.jarvis.voice_chat(transcript), loop
-        )
+        future = asyncio.run_coroutine_threadsafe(self.jarvis.voice_chat(transcript), loop)
         try:
             response = future.result(timeout=60)
             tts.speak(response)
@@ -233,39 +307,58 @@ class VoiceLoop:
 # ---------------------------------------------------------------------------
 
 async def run_daemon(jarvis: "Jarvis") -> None:
-    """Start all JARVIS subsystems and run forever."""
     loop = asyncio.get_event_loop()
 
     # Scheduler
     scheduler = JarvisScheduler(jarvis)
     scheduler.start()
 
-    # Voice loop (background thread)
+    # Voice
     voice = VoiceLoop(jarvis)
     voice.start(loop)
 
-    # FastAPI server
+    # Proactive monitor
+    monitor = ProactiveMonitor(jarvis)
+    monitor_task = asyncio.create_task(monitor.start(cfg.MONITOR_INTERVAL))
+
+    # Telegram bot
+    telegram_task = None
+    if cfg.TELEGRAM_TOKEN:
+        from jarvis.bots.telegram_bot import run_telegram_bot
+        telegram_task = asyncio.create_task(run_telegram_bot(jarvis))
+
+    # Discord bot
+    discord_task = None
+    if cfg.DISCORD_TOKEN:
+        from jarvis.bots.discord_bot import run_discord_bot
+        discord_task = asyncio.create_task(run_discord_bot(jarvis))
+
+    # FastAPI
     app = create_app(jarvis)
-    config = uvicorn.Config(
-        app,
-        host=cfg.API_HOST,
-        port=cfg.API_PORT,
-        log_level="warning",
-    )
+    config = uvicorn.Config(app, host=cfg.API_HOST, port=cfg.API_PORT, log_level="warning")
     server = uvicorn.Server(config)
 
-    # Graceful shutdown
     def _shutdown(sig, frame):
         print("\n[JARVIS] Shutdown signal received. Standing down, Sir.")
         voice.stop()
         scheduler.stop()
+        monitor.stop()
+        monitor_task.cancel()
+        if telegram_task:
+            telegram_task.cancel()
+        if discord_task:
+            discord_task.cancel()
         server.should_exit = True
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
     print(
-        f"[JARVIS] All systems online. API: http://{cfg.API_HOST}:{cfg.API_PORT}\n"
-        f"[JARVIS] {jarvis.status()}"
+        f"\n[JARVIS] All systems online.\n"
+        f"  API     : http://{cfg.API_HOST}:{cfg.API_PORT}\n"
+        f"  Web UI  : http://{cfg.API_HOST}:{cfg.API_PORT}/\n"
+        f"  Docs    : http://{cfg.API_HOST}:{cfg.API_PORT}/docs\n"
+        f"  WS      : ws://{cfg.API_HOST}:{cfg.API_PORT}/ws\n"
+        f"\n{jarvis.status()}\n"
     )
     await server.serve()

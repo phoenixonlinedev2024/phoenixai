@@ -426,4 +426,29 @@ def build_registry() -> ToolRegistry:
     # Load any persisted dynamic tools
     reg.load_dynamic_tools()
 
+    # Load extended tool modules
+    try:
+        from jarvis.tools.browser import register_tools as reg_browser
+        reg_browser(reg)
+    except Exception as exc:
+        print(f"[JARVIS] Browser tools unavailable: {exc}")
+
+    try:
+        from jarvis.tools.email_tool import register_tools as reg_email
+        reg_email(reg)
+    except Exception as exc:
+        print(f"[JARVIS] Email tools unavailable: {exc}")
+
+    try:
+        from jarvis.tools.github_tool import register_tools as reg_github
+        reg_github(reg)
+    except Exception as exc:
+        print(f"[JARVIS] GitHub tools unavailable: {exc}")
+
+    try:
+        from jarvis.tools.package_installer import register_tools as reg_pkg
+        reg_pkg(reg)
+    except Exception as exc:
+        print(f"[JARVIS] Package installer unavailable: {exc}")
+
     return reg

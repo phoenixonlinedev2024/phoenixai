@@ -4,41 +4,82 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "jarvis-openclaw"
-version = "1.0.0"
+version = "2.0.0"
 description = "JARVIS — Just A Rather Very Intelligent System for OpenClaw. Universal AI agent with voice, self-learning, and 24/7 autonomy."
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
     # Anthropic Claude API
     "anthropic>=0.40.0",
+
     # Async & scheduling
     "aiohttp>=3.10.0",
     "aiofiles>=23.2.0",
     "apscheduler>=3.10.0",
+    "websockets>=12.0",
+
     # Web & search
     "requests>=2.32.0",
     "beautifulsoup4>=4.12.0",
     "duckduckgo-search>=6.0.0",
-    # Voice — Speech-to-Text
+
+    # Browser automation (Playwright — free)
+    "playwright>=1.44.0",
+
+    # Voice — Whisper STT (offline, free)
+    "openai-whisper>=20231117",
+
+    # Voice — STT fallback
     "SpeechRecognition>=3.10.0",
     "pyaudio>=0.2.14",
-    # Voice — Text-to-Speech
+
+    # Voice — TTS
     "pyttsx3>=2.90",
     "elevenlabs>=1.5.0",
+
+    # Semantic memory
+    "chromadb>=0.5.0",
+    "sentence-transformers>=3.0.0",
+
     # Data & memory
     "SQLAlchemy>=2.0.0",
     "pydantic>=2.7.0",
+
+    # GitHub integration (free)
+    "PyGithub>=2.3.0",
+
+    # Email
+    "secure-smtplib>=0.1.1",
+
+    # Notifications
+    "plyer>=2.1.0",
+
+    # Bots
+    "python-telegram-bot>=21.0",
+    "discord.py>=2.3.0",
+
+    # Export
+    "reportlab>=4.2.0",
+    "markdown2>=2.4.0",
+
+    # Ollama (local LLM)
+    "ollama>=0.2.0",
+
     # Code execution sandbox
     "RestrictedPython>=7.0",
+
     # System utilities
     "psutil>=5.9.0",
     "python-dotenv>=1.0.0",
     "rich>=13.7.0",
     "typer>=0.12.0",
     "watchdog>=4.0.0",
-    # HTTP server for API mode
+
+    # HTTP server
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.30.0",
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

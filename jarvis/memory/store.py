@@ -76,6 +76,35 @@ class MemoryStore:
                     last_run    TEXT,
                     next_run    TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS capability_gaps (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    description TEXT NOT NULL,
+                    context     TEXT,
+                    resolved    INTEGER DEFAULT 0,
+                    timestamp   TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS ab_results (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_hash   TEXT NOT NULL,
+                    variant_a   TEXT NOT NULL,
+                    variant_b   TEXT NOT NULL,
+                    winner      TEXT,
+                    score_a     REAL,
+                    score_b     REAL,
+                    timestamp   TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS monitored_targets (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name        TEXT UNIQUE NOT NULL,
+                    target_type TEXT NOT NULL,
+                    target      TEXT NOT NULL,
+                    last_hash   TEXT,
+                    action      TEXT NOT NULL,
+                    enabled     INTEGER DEFAULT 1
+                );
             """)
 
     # ------------------------------------------------------------------ #
@@ -201,13 +230,88 @@ class MemoryStore:
                 (last_run, next_run, name),
             )
 
+    # ------------------------------------------------------------------ #
+    # Capability gaps
+    # ------------------------------------------------------------------ #
+
+    def log_gap(self, description: str, context: str = "") -> None:
+        ts = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO capability_gaps (description, context, timestamp) VALUES (?, ?, ?)",
+                (description, context, ts),
+            )
+
+    def get_open_gaps(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, description, context FROM capability_gaps WHERE resolved=0 ORDER BY id DESC LIMIT 20"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolve_gap(self, gap_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE capability_gaps SET resolved=1 WHERE id=?", (gap_id,))
+
+    # ------------------------------------------------------------------ #
+    # A/B test results
+    # ------------------------------------------------------------------ #
+
+    def record_ab_result(
+        self, task_hash: str, variant_a: str, variant_b: str,
+        winner: str, score_a: float, score_b: float,
+    ) -> None:
+        ts = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO ab_results (task_hash, variant_a, variant_b, winner, score_a, score_b, timestamp) VALUES (?,?,?,?,?,?,?)",
+                (task_hash, variant_a, variant_b, winner, score_a, score_b, ts),
+            )
+
+    def get_ab_winner(self, task_hash: str) -> str | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT winner FROM ab_results WHERE task_hash=? ORDER BY id DESC LIMIT 1",
+                (task_hash,),
+            ).fetchone()
+        return row["winner"] if row else None
+
+    # ------------------------------------------------------------------ #
+    # Monitored targets
+    # ------------------------------------------------------------------ #
+
+    def add_monitor_target(self, name: str, target_type: str, target: str, action: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO monitored_targets (name, target_type, target, action)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(name) DO UPDATE SET
+                       target_type=excluded.target_type, target=excluded.target, action=excluded.action""",
+                (name, target_type, target, action),
+            )
+
+    def get_monitor_targets(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM monitored_targets WHERE enabled=1").fetchall()
+        return [dict(r) for r in rows]
+
+    def update_monitor_hash(self, name: str, new_hash: str) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE monitored_targets SET last_hash=? WHERE name=?", (new_hash, name))
+
+    # ------------------------------------------------------------------ #
+    # Summary
+    # ------------------------------------------------------------------ #
+
     def summary(self) -> str:
         with self._conn() as conn:
             n_facts = conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
             n_lessons = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
             n_skills = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
             n_tasks = conn.execute("SELECT COUNT(*) FROM scheduled_tasks WHERE enabled=1").fetchone()[0]
+            n_gaps = conn.execute("SELECT COUNT(*) FROM capability_gaps WHERE resolved=0").fetchone()[0]
+            n_monitors = conn.execute("SELECT COUNT(*) FROM monitored_targets WHERE enabled=1").fetchone()[0]
         return (
-            f"Memory summary: {n_facts} facts, {n_lessons} lessons learned, "
-            f"{n_skills} tracked skills, {n_tasks} scheduled tasks."
+            f"Memory: {n_facts} facts | {n_lessons} lessons | {n_skills} skills | "
+            f"{n_tasks} scheduled tasks | {n_gaps} open gaps | {n_monitors} monitors"
         )

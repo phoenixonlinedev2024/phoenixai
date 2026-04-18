@@ -8,11 +8,15 @@
 
 | Capability | Description |
 |---|---|
-| **Universal Action** | Web search/scrape, file I/O, shell commands, code execution in any language, REST/GraphQL API calls, system monitoring |
-| **Dynamic Creation** | If a tool or capability doesn't exist, JARVIS synthesises and registers it on the fly using Claude |
-| **Self-Learning** | After every session, JARVIS reflects on what happened, extracts lessons, stores facts, and improves future behaviour |
-| **Voice** | Wake-word activation ("JARVIS"), speech-to-text (Google STT), text-to-speech (pyttsx3 offline or ElevenLabs premium) |
-| **Always On** | FastAPI REST server + APScheduler for cron-style autonomous tasks + 24/7 voice loop — all running concurrently |
+| **Universal Action** | Web search/fetch, browser automation (Playwright), file I/O, shell, code execution in any language, REST/GraphQL, email, GitHub, system monitoring |
+| **Dynamic Creation** | If a tool or capability doesn't exist, JARVIS synthesises and registers it on the fly via Claude |
+| **Semantic Memory** | ChromaDB vector store for meaning-based recall + SQLite for facts, lessons, history, gaps, and schedules |
+| **Self-Learning** | Post-session reflection extracts lessons and facts fed back into every future prompt. Confidence scoring + A/B testing |
+| **Voice** | Whisper STT (offline, free, accurate) + Piper neural TTS / pyttsx3 / ElevenLabs. Wake-word activated |
+| **Always On** | FastAPI REST + WebSocket streaming + APScheduler + proactive URL/file monitor + Telegram + Discord bots |
+| **Personality Profiles** | Switch tone at runtime: default / professional / casual / terse / verbose |
+| **Plugin System** | Drop a `.py` into `jarvis/plugins/` — hot-reloaded without restart |
+| **Web UI** | Built-in browser chat interface served at `/` |
 
 ---
 
