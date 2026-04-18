@@ -82,6 +82,25 @@ class Config:
     # Signal
     SIGNAL_PHONE_NUMBER: str = os.environ.get("SIGNAL_PHONE_NUMBER", "")
     SIGNAL_CLI_PATH: str = os.environ.get("SIGNAL_CLI_PATH", "signal-cli")
+    # IRC
+    IRC_SERVER: str = os.environ.get("IRC_SERVER", "")
+    IRC_PORT: int = int(os.environ.get("IRC_PORT", "6667"))
+    IRC_NICK: str = os.environ.get("IRC_NICK", "JARVIS")
+    IRC_CHANNELS: str = os.environ.get("IRC_CHANNELS", "#jarvis")
+    # Matrix
+    MATRIX_HOMESERVER: str = os.environ.get("MATRIX_HOMESERVER", "")
+    MATRIX_USER_ID: str = os.environ.get("MATRIX_USER_ID", "")
+    MATRIX_ACCESS_TOKEN: str = os.environ.get("MATRIX_ACCESS_TOKEN", "")
+    # Mattermost
+    MATTERMOST_URL: str = os.environ.get("MATTERMOST_URL", "")
+    MATTERMOST_TOKEN: str = os.environ.get("MATTERMOST_TOKEN", "")
+    MATTERMOST_BOT_USER_ID: str = os.environ.get("MATTERMOST_BOT_USER_ID", "")
+    MATTERMOST_BOT_NAME: str = os.environ.get("MATTERMOST_BOT_NAME", "jarvis")
+
+    # ── Security ──────────────────────────────────────────────────────
+    SECURITY_ENABLED: bool = os.environ.get("SECURITY_ENABLED", "false").lower() == "true"
+    RATE_LIMIT: int = int(os.environ.get("RATE_LIMIT", "120"))
+    SELF_IMPROVE_INTERVAL_HOURS: float = float(os.environ.get("SELF_IMPROVE_INTERVAL_HOURS", "12"))
 
     # ── External integrations ──────────────────────────────────────────
     GITHUB_TOKEN: str = os.environ.get("GITHUB_TOKEN", "")

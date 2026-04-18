@@ -22,6 +22,9 @@ from jarvis.config import cfg
 from jarvis.export import export_markdown, export_pdf
 from jarvis.monitor import ProactiveMonitor
 from jarvis.personality import JARVIS_VOICE_INTRO, JARVIS_WAKE_RESPONSES
+from jarvis.observability import metrics
+from jarvis.security import key_store, rate_limiter, SecurityMiddleware
+from jarvis.acp import bus as acp_bus
 
 if TYPE_CHECKING:
     from jarvis.core import Jarvis
@@ -92,14 +95,19 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
     @app.post("/chat", response_model=ChatResponse)
     async def chat(req: ChatRequest):
         jarvis.set_profile(req.profile)
+        metrics.inc("chat.requests")
         try:
-            response = await jarvis.chat(req.message, voice_mode=req.voice_mode)
+            async with metrics.atime("chat.latency"):
+                response = await jarvis.chat(req.message, voice_mode=req.voice_mode)
+            metrics.inc("chat.success")
+            acp_bus.publish_sync("chat.completed", {"message": req.message[:80], "session": jarvis._session_id})
             return ChatResponse(
                 response=response,
                 session_id=jarvis._session_id,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
         except Exception as exc:
+            metrics.inc("chat.errors")
             raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/session/end")
@@ -217,6 +225,106 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
     from jarvis.bots.whatsapp_bot import mount_whatsapp_webhook
     mount_whatsapp_webhook(app, jarvis)
 
+    # ── Observability ────────────────────────────────────────────────────
+
+    from fastapi.responses import PlainTextResponse
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    async def prometheus_metrics():
+        return metrics.prometheus_text()
+
+    @app.get("/metrics/json")
+    async def json_metrics():
+        return metrics.snapshot()
+
+    # ── Security / key management ────────────────────────────────────────
+
+    class KeyRequest(BaseModel):
+        name: str = ""
+        role: str = "user"
+
+    @app.get("/security/keys")
+    async def list_api_keys():
+        return {"keys": key_store.list_keys()}
+
+    @app.post("/security/keys")
+    async def create_api_key(req: KeyRequest):
+        raw = key_store.generate(name=req.name, role=req.role)
+        return {"key": raw, "role": req.role, "name": req.name}
+
+    @app.delete("/security/keys/{key_prefix}")
+    async def revoke_api_key(key_prefix: str):
+        # find by prefix
+        for k in key_store._keys:
+            if k.startswith(key_prefix):
+                key_store.revoke(k)
+                return {"revoked": True}
+        return {"revoked": False}
+
+    # ── ACP message bus ──────────────────────────────────────────────────
+
+    @app.get("/acp/history")
+    async def acp_history(topic: str = "", limit: int = 50):
+        return {"messages": acp_bus.history(topic=topic, limit=limit)}
+
+    @app.get("/acp/stats")
+    async def acp_stats():
+        return acp_bus.stats()
+
+    @app.post("/acp/publish")
+    async def acp_publish(body: dict):
+        topic = body.get("topic", "")
+        payload = body.get("payload")
+        sender = body.get("sender", "api")
+        if not topic:
+            raise HTTPException(status_code=400, detail="topic required")
+        await acp_bus.publish(topic, payload, sender)
+        return {"published": True, "topic": topic}
+
+    # ── Self-improvement ─────────────────────────────────────────────────
+
+    @app.post("/self-improve/run")
+    async def self_improve_run():
+        from jarvis.self_improve import SelfImproveEngine
+        engine = SelfImproveEngine(jarvis)
+        result = await engine.run_cycle()
+        return result
+
+    @app.get("/self-improve/benchmarks")
+    async def self_improve_history():
+        from jarvis.self_improve import BenchmarkRunner
+        runner = BenchmarkRunner(jarvis)
+        return {"history": runner.load_history(), "trend": runner.trend()}
+
+    @app.get("/self-improve/capabilities")
+    async def capability_report():
+        from jarvis.self_improve import CapabilityEvolver
+        evolver = CapabilityEvolver(jarvis)
+        return evolver.capability_report()
+
+    # ── Advanced scheduling ──────────────────────────────────────────────
+
+    class NLScheduleRequest(BaseModel):
+        name: str
+        schedule: str
+        prompt: str
+        priority: str = "NORMAL"
+        tags: list[str] = []
+
+    @app.post("/schedule/nl")
+    async def schedule_nl(req: NLScheduleRequest):
+        from jarvis.scheduling import NLScheduler, Priority
+        sched = NLScheduler(jarvis)
+        prio = Priority[req.priority.upper()] if req.priority.upper() in Priority.__members__ else Priority.NORMAL
+        job = await sched.add(req.name, req.schedule, req.prompt, priority=prio, tags=req.tags)
+        return job.to_dict()
+
+    @app.get("/schedule/nl/parse")
+    async def parse_nl_schedule(phrase: str):
+        from jarvis.scheduling import NLScheduler
+        cron = NLScheduler.nl_to_cron(phrase)
+        return {"phrase": phrase, "cron": cron}
+
     # ── WebSocket streaming endpoint ─────────────────────────────────────
 
     @app.websocket("/ws")
@@ -241,7 +349,7 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
             except Exception:
                 pass
 
-    return app
+    return SecurityMiddleware(app, key_store, rate_limiter)
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +500,32 @@ async def run_daemon(jarvis: "Jarvis") -> None:
         from jarvis.bots.signal_bot import run_signal_bot
         signal_task = asyncio.create_task(run_signal_bot(jarvis))
 
-    # FastAPI
+    # IRC bot
+    irc_task = None
+    if cfg.IRC_SERVER:
+        from jarvis.bots.irc_bot import run_irc_bot
+        irc_task = asyncio.create_task(run_irc_bot(jarvis))
+
+    # Matrix bot
+    matrix_task = None
+    if cfg.MATRIX_HOMESERVER and cfg.MATRIX_ACCESS_TOKEN:
+        from jarvis.bots.matrix_bot import run_matrix_bot
+        matrix_task = asyncio.create_task(run_matrix_bot(jarvis))
+
+    # Mattermost bot
+    mattermost_task = None
+    if cfg.MATTERMOST_URL and cfg.MATTERMOST_TOKEN:
+        from jarvis.bots.mattermost_bot import run_mattermost_bot
+        mattermost_task = asyncio.create_task(run_mattermost_bot(jarvis))
+
+    # Self-improvement background cycle
+    self_improve_task = None
+    if cfg.SELF_IMPROVE_INTERVAL_HOURS > 0:
+        from jarvis.self_improve import SelfImproveEngine
+        engine = SelfImproveEngine(jarvis)
+        self_improve_task = asyncio.create_task(engine.start_background())
+
+    # FastAPI (wrapped with security middleware)
     app = create_app(jarvis)
     config = uvicorn.Config(app, host=cfg.API_HOST, port=cfg.API_PORT, log_level="warning")
     server = uvicorn.Server(config)
@@ -403,7 +536,8 @@ async def run_daemon(jarvis: "Jarvis") -> None:
         scheduler.stop()
         monitor.stop()
         monitor_task.cancel()
-        for task in [telegram_task, discord_task, slack_task, signal_task]:
+        for task in [telegram_task, discord_task, slack_task, signal_task,
+                     irc_task, matrix_task, mattermost_task, self_improve_task]:
             if task:
                 task.cancel()
         server.should_exit = True
