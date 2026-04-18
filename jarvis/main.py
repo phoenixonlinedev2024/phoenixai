@@ -277,5 +277,95 @@ def install_piper(
     console.print(f"[dim]Model URL: {model_url}[/dim]")
 
 
+# ── benchmark ────────────────────────────────────────────────────────────────
+
+@app.command()
+def benchmark(
+    trend: bool = typer.Option(False, "--trend", "-t", help="Show pass-rate trend instead of running"),
+) -> None:
+    """Run JARVIS self-improvement benchmarks and report pass rate."""
+    jarvis = _get_jarvis()
+
+    async def _run():
+        from jarvis.self_improve import BenchmarkRunner
+        runner = BenchmarkRunner(jarvis)
+        if trend:
+            t = runner.trend()
+            console.print(Panel(
+                "\n".join(f"  {k}: {v}" for k, v in t.items()),
+                title="Benchmark Trend", border_style="cyan",
+            ))
+            return
+
+        with console.status("[cyan]Running benchmark suite...[/cyan]"):
+            result = await runner.run_suite()
+
+        table = Table(title="Benchmark Results", border_style="cyan", show_lines=True)
+        table.add_column("Case", style="bold")
+        table.add_column("Pass", style="green")
+        table.add_column("Score")
+        table.add_column("Latency")
+        table.add_column("Error", style="red")
+        for r in result["results"]:
+            table.add_row(
+                r["case_id"],
+                "✓" if r["passed"] else "✗",
+                f"{r['score']:.0%}",
+                f"{r['latency_s']:.1f}s",
+                r.get("error") or "",
+            )
+        console.print(table)
+        console.print(
+            f"\n[bold]Pass rate: {result['pass_rate']:.0%}[/bold]  "
+            f"({result['passed']}/{result['total']} cases)  "
+            f"avg latency: {result['avg_latency_s']:.1f}s"
+        )
+
+    asyncio.run(_run())
+
+
+# ── keys ─────────────────────────────────────────────────────────────────────
+
+@app.command()
+def keys(
+    create: bool = typer.Option(False, "--create", "-c", help="Generate a new API key"),
+    name: str = typer.Option("", "--name", "-n"),
+    role: str = typer.Option("user", "--role", "-r", help="user or admin"),
+    revoke: Optional[str] = typer.Option(None, "--revoke", help="Key prefix to revoke"),
+) -> None:
+    """Manage JARVIS API keys (security module)."""
+    from jarvis.security import key_store
+
+    if revoke:
+        ok = any(key_store.revoke(k) for k in list(key_store._keys) if k.startswith(revoke))
+        console.print(f"[{'green' if ok else 'red'}]{'Revoked.' if ok else 'Key not found.'}[/]")
+        return
+
+    if create:
+        raw = key_store.generate(name=name, role=role)
+        console.print(Panel(
+            f"[bold cyan]{raw}[/bold cyan]\n\n"
+            f"Role: [yellow]{role}[/yellow]  Name: {name or '—'}\n\n"
+            "[dim]Pass as header: X-Api-Key: <key>[/dim]",
+            title="New API Key", border_style="green",
+        ))
+        return
+
+    # List
+    all_keys = key_store.list_keys()
+    if not all_keys:
+        console.print("[dim]No API keys provisioned. Use --create to generate one.[/dim]")
+        return
+    table = Table(title="API Keys", border_style="cyan")
+    table.add_column("Prefix")
+    table.add_column("Role", style="yellow")
+    table.add_column("Name")
+    table.add_column("Calls", justify="right")
+    table.add_column("Last used")
+    for k in all_keys:
+        table.add_row(k["key_prefix"], k["role"], k["name"], str(k["calls"]), k["last_used"] or "never")
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()
