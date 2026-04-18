@@ -451,4 +451,22 @@ def build_registry() -> ToolRegistry:
     except Exception as exc:
         print(f"[JARVIS] Package installer unavailable: {exc}")
 
+    try:
+        from jarvis.tools.image_gen import register_tools as reg_img
+        reg_img(reg)
+    except Exception as exc:
+        print(f"[JARVIS] Image gen tools unavailable: {exc}")
+
+    try:
+        from jarvis.tools.nlp_cron import register_tools as reg_cron
+        reg_cron(reg)
+    except Exception as exc:
+        print(f"[JARVIS] NLP cron tools unavailable: {exc}")
+
+    try:
+        from jarvis.tools.sandbox_tools import register_tools as reg_sandbox
+        reg_sandbox(reg)
+    except Exception as exc:
+        print(f"[JARVIS] Sandbox tools unavailable: {exc}")
+
     return reg

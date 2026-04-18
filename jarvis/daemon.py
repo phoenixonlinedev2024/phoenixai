@@ -170,6 +170,53 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
         msg = export_pdf(jarvis.memory, jarvis._session_id)
         return {"message": msg}
 
+    @app.get("/skills")
+    async def list_skills():
+        return {"skills": [s.to_dict() for s in jarvis.skills.all()]}
+
+    @app.post("/skills/activate")
+    async def activate_skill(body: dict):
+        name = body.get("name", "")
+        ok = jarvis.activate_skill(name)
+        return {"activated": ok, "skill": name}
+
+    @app.post("/skills/deactivate")
+    async def deactivate_skill():
+        jarvis.deactivate_skill()
+        return {"message": "Skill deactivated."}
+
+    @app.get("/trajectories/stats")
+    async def trajectory_stats():
+        return jarvis.trajectories.stats()
+
+    @app.post("/trajectories/export")
+    async def export_trajectories(body: dict = {}):
+        from jarvis.research.sharegpt import export_dataset
+        path = body.get("output", "jarvis_dataset.jsonl")
+        msg = export_dataset(jarvis.trajectories, output_path=path)
+        return {"message": msg}
+
+    @app.post("/trajectories/export/atropos")
+    async def export_atropos(body: dict = {}):
+        from jarvis.research.sharegpt import export_atropos_format
+        path = body.get("output", "jarvis_atropos.jsonl")
+        msg = export_atropos_format(jarvis.trajectories, output_path=path)
+        return {"message": msg}
+
+    @app.get("/providers/health")
+    async def provider_health():
+        return await jarvis.provider_router.health_check()
+
+    @app.get("/sandbox/backends")
+    async def sandbox_backends():
+        from jarvis.sandbox.router import SandboxRouter
+        router = SandboxRouter()
+        return {"backends": router.list_backends(), "preferred": cfg.SANDBOX_BACKEND}
+
+    # Mount WhatsApp webhooks
+    from jarvis.bots.whatsapp_bot import mount_whatsapp_webhook
+    mount_whatsapp_webhook(app, jarvis)
+
     # ── WebSocket streaming endpoint ─────────────────────────────────────
 
     @app.websocket("/ws")
@@ -333,6 +380,18 @@ async def run_daemon(jarvis: "Jarvis") -> None:
         from jarvis.bots.discord_bot import run_discord_bot
         discord_task = asyncio.create_task(run_discord_bot(jarvis))
 
+    # Slack bot
+    slack_task = None
+    if cfg.SLACK_BOT_TOKEN and cfg.SLACK_APP_TOKEN:
+        from jarvis.bots.slack_bot import run_slack_bot
+        slack_task = asyncio.create_task(run_slack_bot(jarvis))
+
+    # Signal bot
+    signal_task = None
+    if cfg.SIGNAL_PHONE_NUMBER:
+        from jarvis.bots.signal_bot import run_signal_bot
+        signal_task = asyncio.create_task(run_signal_bot(jarvis))
+
     # FastAPI
     app = create_app(jarvis)
     config = uvicorn.Config(app, host=cfg.API_HOST, port=cfg.API_PORT, log_level="warning")
@@ -344,10 +403,9 @@ async def run_daemon(jarvis: "Jarvis") -> None:
         scheduler.stop()
         monitor.stop()
         monitor_task.cancel()
-        if telegram_task:
-            telegram_task.cancel()
-        if discord_task:
-            discord_task.cancel()
+        for task in [telegram_task, discord_task, slack_task, signal_task]:
+            if task:
+                task.cancel()
         server.should_exit = True
 
     signal.signal(signal.SIGINT, _shutdown)

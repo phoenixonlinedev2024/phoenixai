@@ -23,6 +23,10 @@ from jarvis.planner import TaskPlanner
 from jarvis.tools.creator import synthesise_tool
 from jarvis.tools.registry import ToolRegistry, build_registry
 from jarvis.plugins.loader import PluginLoader
+from jarvis.skills.registry import SkillRegistry
+from jarvis.skills.builtin import load_builtin_skills
+from jarvis.research.trajectory import TrajectoryCollector
+from jarvis.providers.router import ProviderRouter
 
 
 class Jarvis:
@@ -34,21 +38,39 @@ class Jarvis:
                 "ANTHROPIC_API_KEY not set. Add it to your .env file or environment."
             )
         self.client = anthropic.AsyncAnthropic(api_key=cfg.ANTHROPIC_API_KEY)
+        self.provider_router = ProviderRouter()
         self.registry: ToolRegistry = build_registry()
         self.memory = MemoryStore()
         self.semantic = SemanticMemory()
         self.learner = LearningEngine(self.memory)
         self.planner = TaskPlanner(self.client, self.memory)
+        self.skills = SkillRegistry()
+        self.trajectories = TrajectoryCollector()
         self._session_id: str = str(uuid.uuid4())
         self._session_transcript: list[dict] = []
         self._profile: str = cfg.DEFAULT_PROFILE
+        self._active_skill: str | None = None
         self._plugin_loader = PluginLoader(self.registry)
+
+        # Load built-in skills
+        load_builtin_skills(self.skills)
+
+        # Register subagent tools (needs self reference)
+        try:
+            from jarvis.tools.subagent_tools import register_tools as reg_subagent
+            reg_subagent(self.registry, jarvis=self)
+        except Exception as exc:
+            print(f"[JARVIS] Subagent tools unavailable: {exc}")
 
         # Load plugins and start hot reload
         n = self._plugin_loader.load_all()
         if n:
             print(f"[JARVIS] Loaded {n} plugin(s).")
         self._plugin_loader.start_hot_reload()
+
+        # Start trajectory collection
+        if cfg.TRAJECTORY_COLLECTION:
+            self.trajectories.start(self._session_id)
 
     # ------------------------------------------------------------------ #
     # Personality profile
@@ -59,6 +81,20 @@ class Jarvis:
         if profile in PERSONALITY_PROFILES:
             self._profile = profile
 
+    def _get_model(self) -> str:
+        return cfg.CLAUDE_MODEL
+
+    def activate_skill(self, skill_name: str) -> bool:
+        skill = self.skills.get(skill_name)
+        if skill:
+            self._active_skill = skill_name
+            self.skills.increment_usage(skill_name)
+            return True
+        return False
+
+    def deactivate_skill(self) -> None:
+        self._active_skill = None
+
     # ------------------------------------------------------------------ #
     # Public chat interface
     # ------------------------------------------------------------------ #
@@ -66,14 +102,17 @@ class Jarvis:
     async def chat(self, user_message: str, voice_mode: bool = False) -> str:
         self.memory.save_message(self._session_id, "user", user_message)
         self._session_transcript.append({"role": "user", "content": user_message})
-        # Store in semantic memory for future recall
         self.semantic.store_conversation_snippet(user_message, self._session_id)
+        if cfg.TRAJECTORY_COLLECTION:
+            self.trajectories.record_turn(self._session_id, "user", user_message)
 
         response = await self._run_agent_loop(user_message, voice_mode)
 
         self.memory.save_message(self._session_id, "assistant", response)
         self._session_transcript.append({"role": "assistant", "content": response})
         self.semantic.store_conversation_snippet(response, self._session_id)
+        if cfg.TRAJECTORY_COLLECTION:
+            self.trajectories.record_turn(self._session_id, "assistant", response)
 
         return response
 
@@ -104,9 +143,12 @@ class Jarvis:
         self.new_session()
         return JARVIS_LEARNING_TEMPLATE.format(count=n_lessons) if n_lessons else "Session ended, Sir."
 
-    def new_session(self) -> None:
+    def new_session(self, task: str = "") -> None:
         self._session_id = str(uuid.uuid4())
         self._session_transcript = []
+        self._active_skill = None
+        if cfg.TRAJECTORY_COLLECTION:
+            self.trajectories.start(self._session_id, task=task)
 
     # ------------------------------------------------------------------ #
     # Agent loop
@@ -116,12 +158,20 @@ class Jarvis:
         memory_ctx = self.learner.build_context_prompt()
         semantic_ctx = self.semantic.recall_relevant(user_message, n=6)
         gap_ctx = "\n".join(f"- {g['description']}" for g in self.memory.get_open_gaps()[:5])
+
+        # Inject active skill system prompt
+        skill_addon = ""
+        if self._active_skill:
+            skill = self.skills.get(self._active_skill)
+            if skill:
+                skill_addon = f"\n\n## Active Skill: {skill.name}\n{skill.system_prompt}"
+
         return get_system_prompt(
             profile=self._profile,
             voice_mode=voice_mode,
             memory_context="\n".join(filter(None, [memory_ctx, semantic_ctx])),
             gap_context=gap_ctx,
-        )
+        ) + skill_addon
 
     async def _run_agent_loop(self, user_message: str, voice_mode: bool) -> str:
         history = self.memory.get_history(self._session_id, limit=40)
