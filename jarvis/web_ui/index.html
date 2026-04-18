@@ -223,6 +223,15 @@
     <button class="sidebar-btn" onclick="showMemory()">◇ Memory</button>
     <button class="sidebar-btn" onclick="exportMD()">↓ Export MD</button>
     <button class="sidebar-btn" onclick="exportPDF()">↓ Export PDF</button>
+
+    <div class="sidebar-title" style="margin-top:12px">V4 DASHBOARDS</div>
+    <button class="sidebar-btn" onclick="showMetrics()">⚡ Metrics</button>
+    <button class="sidebar-btn" onclick="showSecurity()">🔑 API Keys</button>
+    <button class="sidebar-btn" onclick="showACP()">⇄ ACP Bus</button>
+    <button class="sidebar-btn" onclick="showSelfImprove()">↑ Self-Improve</button>
+    <button class="sidebar-btn" onclick="runBenchmark()">▶ Run Benchmark</button>
+    <button class="sidebar-btn" onclick="showScheduler()">⏱ NL Scheduler</button>
+
     <div class="sidebar-title" style="margin-top:12px">QUICK</div>
     <button class="sidebar-btn" onclick="quickSend('Search the web for the latest AI news and summarise.')">AI News</button>
     <button class="sidebar-btn" onclick="quickSend('Get system info.')">System Info</button>
@@ -430,6 +439,126 @@ async function setProfile(profile) {
 
 function escapeHtml(text) {
   return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── V4 Dashboard handlers ────────────────────────────────────────────────────
+
+async function showMetrics() {
+  addTyping();
+  try {
+    const resp = await fetch(API + '/metrics/json');
+    const d = await resp.json();
+    removeTyping();
+    const up = d.uptime_seconds != null ? `Uptime: ${d.uptime_seconds.toFixed(1)}s\n` : '';
+    const ctrs = Object.entries(d.counters || {}).map(([k,v]) => `  ${k}: ${v}`).join('\n') || '  (none)';
+    const hists = Object.entries(d.histograms || {}).map(([k,h]) =>
+      `  ${k}: count=${h.count} avg=${(h.avg||0).toFixed(3)}s p95=${(h.p95||0).toFixed(3)}s`
+    ).join('\n') || '  (none)';
+    addMessage('jarvis', `${up}COUNTERS:\n${ctrs}\n\nHISTOGRAMS:\n${hists}`);
+  } catch(e) { removeTyping(); addMessage('jarvis', 'Metrics unavailable: ' + e.message); }
+}
+
+async function showSecurity() {
+  addTyping();
+  try {
+    const resp = await fetch(API + '/security/keys');
+    const d = await resp.json();
+    removeTyping();
+    if (!d.keys || !d.keys.length) { addMessage('jarvis', 'No API keys found.'); return; }
+    const lines = d.keys.map(k =>
+      `  [${k.role}] ${k.name} — ${k.key_prefix || k.id || '???'} (created: ${k.created_at || 'unknown'})`
+    );
+    addMessage('jarvis', `API KEYS (${d.keys.length}):\n${lines.join('\n')}`);
+  } catch(e) { removeTyping(); addMessage('jarvis', 'Security endpoint unavailable: ' + e.message); }
+}
+
+async function createApiKey(name, role) {
+  role = role || 'user';
+  const resp = await fetch(API + '/security/keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, role }),
+  });
+  const d = await resp.json();
+  addMessage('jarvis', d.key
+    ? `API key created.\nName: ${d.key.name}\nRole: ${d.key.role}\nKey: ${d.raw_key || '(see server logs)'}`
+    : ('Error: ' + JSON.stringify(d)));
+}
+
+async function showACP() {
+  addTyping();
+  try {
+    const [hResp, sResp] = await Promise.all([
+      fetch(API + '/acp/history').then(r => r.json()),
+      fetch(API + '/acp/stats').then(r => r.json()),
+    ]);
+    removeTyping();
+    const stats = sResp.stats || sResp;
+    const statsLine = `Topics: ${stats.topic_count || 0}  Messages published: ${stats.published || 0}  Subscribers: ${stats.subscriber_count || 0}`;
+    const history = (hResp.history || []).slice(-10).map(m =>
+      `  [${m.topic}] ${m.sender || 'system'}: ${typeof m.payload === 'string' ? m.payload : JSON.stringify(m.payload)}`
+    ).join('\n') || '  (empty)';
+    addMessage('jarvis', `ACP BUS STATS:\n  ${statsLine}\n\nRECENT MESSAGES (last 10):\n${history}`);
+  } catch(e) { removeTyping(); addMessage('jarvis', 'ACP Bus unavailable: ' + e.message); }
+}
+
+async function showSelfImprove() {
+  addTyping();
+  try {
+    const [bResp, cResp] = await Promise.all([
+      fetch(API + '/self-improve/benchmarks').then(r => r.json()),
+      fetch(API + '/self-improve/capabilities').then(r => r.json()),
+    ]);
+    removeTyping();
+    const runs = bResp.runs || [];
+    const latest = runs.length ? runs[runs.length - 1] : null;
+    const score = latest ? `Latest score: ${(latest.avg_score * 100).toFixed(1)}% (${latest.timestamp || ''})` : 'No runs yet.';
+    const caps = (cResp.capabilities || []).map(c => `  [${c.status || '?'}] ${c.name}: ${c.description || ''}`).join('\n') || '  (none)';
+    const gaps = (cResp.gaps || []).join(', ') || 'none';
+    addMessage('jarvis', `SELF-IMPROVE:\n  ${score}\n\nCAPABILITIES:\n${caps}\n\nGAPS: ${gaps}`);
+  } catch(e) { removeTyping(); addMessage('jarvis', 'Self-improve endpoint unavailable: ' + e.message); }
+}
+
+async function runBenchmark() {
+  addMessage('jarvis', 'Running benchmark suite — please wait...');
+  addTyping();
+  try {
+    const resp = await fetch(API + '/self-improve/run', { method: 'POST' });
+    const d = await resp.json();
+    removeTyping();
+    const results = d.results || [];
+    if (!results.length) { addMessage('jarvis', 'No benchmark results returned.'); return; }
+    const rows = results.map(r =>
+      `  ${r.name.padEnd(20)} score=${((r.score||0)*100).toFixed(1)}%  latency=${(r.latency_ms||0).toFixed(0)}ms  ${r.passed ? '✓' : '✗'}`
+    );
+    const avg = results.reduce((s,r) => s + (r.score||0), 0) / results.length;
+    addMessage('jarvis', `BENCHMARK RESULTS:\n${rows.join('\n')}\n\nAverage score: ${(avg*100).toFixed(1)}%`);
+  } catch(e) { removeTyping(); addMessage('jarvis', 'Benchmark failed: ' + e.message); }
+}
+
+async function showScheduler() {
+  addTyping();
+  try {
+    const resp = await fetch(API + '/schedule');
+    const d = await resp.json();
+    removeTyping();
+    const jobs = (d.jobs || []).map(j =>
+      `  [${j.id || '?'}] ${j.name} — cron: ${j.cron}  next: ${j.next_run || 'N/A'}`
+    ).join('\n') || '  (no scheduled jobs)';
+    addMessage('jarvis', `SCHEDULED JOBS:\n${jobs}\n\nTo add a job, type something like:\n  schedule: every morning run system check`);
+  } catch(e) { removeTyping(); addMessage('jarvis', 'Scheduler unavailable: ' + e.message); }
+}
+
+async function scheduleNL(phrase) {
+  const resp = await fetch(API + '/schedule/nl', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phrase }),
+  });
+  const d = await resp.json();
+  addMessage('jarvis', d.cron
+    ? `Scheduled: "${phrase}" → cron: ${d.cron}`
+    : ('Error: ' + JSON.stringify(d)));
 }
 
 connect();

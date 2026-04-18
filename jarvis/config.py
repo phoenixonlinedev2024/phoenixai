@@ -97,6 +97,12 @@ class Config:
     MATTERMOST_BOT_USER_ID: str = os.environ.get("MATTERMOST_BOT_USER_ID", "")
     MATTERMOST_BOT_NAME: str = os.environ.get("MATTERMOST_BOT_NAME", "jarvis")
 
+    # ── Object storage (S3 / R2 / MinIO) ──────────────────────────────
+    S3_ACCESS_KEY: str = os.environ.get("S3_ACCESS_KEY", "")
+    S3_SECRET_KEY: str = os.environ.get("S3_SECRET_KEY", "")
+    S3_REGION: str = os.environ.get("S3_REGION", "us-east-1")
+    S3_ENDPOINT_URL: str = os.environ.get("S3_ENDPOINT_URL", "")
+
     # ── Security ──────────────────────────────────────────────────────
     SECURITY_ENABLED: bool = os.environ.get("SECURITY_ENABLED", "false").lower() == "true"
     RATE_LIMIT: int = int(os.environ.get("RATE_LIMIT", "120"))
