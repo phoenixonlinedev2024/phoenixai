@@ -269,12 +269,48 @@ def install_piper(
         console.print(f"[red]Unsupported platform: {system}/{arch}[/red]")
         raise typer.Exit(1)
 
-    base_url = "https://github.com/rhasspy/piper/releases/latest/download"
-    model_url = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/{model}.onnx"
+    import tarfile
+    import zipfile
+    from pathlib import Path
 
-    console.print(f"[cyan]Installing Piper to {output_dir}...[/cyan]")
-    console.print(f"[dim]Then set PIPER_BINARY and PIPER_MODEL in your .env file.[/dim]")
-    console.print(f"[dim]Model URL: {model_url}[/dim]")
+    base_url = "https://github.com/rhasspy/piper/releases/latest/download"
+    archive_name = release_map[key]
+    archive_url = f"{base_url}/{archive_name}"
+    model_url = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/{model}.onnx"
+    model_config_url = model_url + ".json"
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    archive_path = out / archive_name
+
+    console.print(f"[cyan]Downloading Piper binary from {archive_url}...[/cyan]")
+    try:
+        urllib.request.urlretrieve(archive_url, archive_path)
+    except Exception as exc:
+        console.print(f"[red]Download failed: {exc}[/red]")
+        raise typer.Exit(1)
+
+    console.print("[cyan]Extracting archive...[/cyan]")
+    if archive_name.endswith(".tar.gz"):
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(out)
+    elif archive_name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as zf:
+            zf.extractall(out)
+    archive_path.unlink(missing_ok=True)
+
+    console.print(f"[cyan]Downloading voice model {model}...[/cyan]")
+    try:
+        urllib.request.urlretrieve(model_url, out / f"{model}.onnx")
+        urllib.request.urlretrieve(model_config_url, out / f"{model}.onnx.json")
+    except Exception as exc:
+        console.print(f"[yellow]Model download warning: {exc}[/yellow]")
+
+    binary = out / "piper" / ("piper.exe" if system == "windows" else "piper")
+    console.print(f"[green]Piper installed to {out}[/green]")
+    console.print(f"[dim]Add to .env:[/dim]")
+    console.print(f"  PIPER_BINARY={binary}")
+    console.print(f"  PIPER_MODEL={out / f'{model}.onnx'}")
 
 
 # ── benchmark ────────────────────────────────────────────────────────────────
