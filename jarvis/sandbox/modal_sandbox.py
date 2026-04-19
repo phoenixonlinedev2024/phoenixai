@@ -57,7 +57,9 @@ class ModalSandbox(SandboxBackend):
 
             @app.function(image=image, timeout=timeout)
             def _exec(src: str) -> dict:
-                import sys, io, traceback
+                import sys
+                import io
+                import traceback
                 old_stdout, old_stderr = sys.stdout, sys.stderr
                 sys.stdout = io.StringIO()
                 sys.stderr = io.StringIO()

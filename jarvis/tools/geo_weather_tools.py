@@ -1,7 +1,6 @@
 """Geo, weather, and RSS tools — all free APIs, no key needed."""
 
 from __future__ import annotations
-import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -101,8 +100,8 @@ def _log_analyse(path: str, pattern: str = "", tail: int = 100) -> str:
         lines = open(path, encoding="utf-8", errors="replace").readlines()
         lines = lines[-tail:]
         if pattern:
-            lines = [l for l in lines if re.search(pattern, l, re.IGNORECASE)]
-        errors = [l for l in lines if any(w in l.lower() for w in ("error", "exception", "critical", "fatal"))]
+            lines = [line for line in lines if re.search(pattern, line, re.IGNORECASE)]
+        errors = [line for line in lines if any(w in line.lower() for w in ("error", "exception", "critical", "fatal"))]
         return f"Total lines: {len(lines)}, Errors: {len(errors)}\n\n" + "".join(lines[:50])
     except Exception as exc:
         return f"Log error: {exc}"

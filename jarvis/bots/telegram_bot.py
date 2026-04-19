@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 from jarvis.config import cfg
@@ -39,7 +38,7 @@ async def run_telegram_bot(jarvis: "Jarvis") -> None:
 
     async def memory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lessons = jarvis.memory.get_lessons(limit=5)
-        text = "Recent lessons:\n" + "\n".join(f"• {l}" for l in lessons) if lessons else "No lessons yet."
+        text = "Recent lessons:\n" + "\n".join(f"• {lesson}" for lesson in lessons) if lessons else "No lessons yet."
         await update.message.reply_text(text)
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -65,7 +64,7 @@ async def run_telegram_bot(jarvis: "Jarvis") -> None:
     app.add_handler(CommandHandler("memory", memory_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print(f"[JARVIS Telegram] Bot starting...")
+    print("[JARVIS Telegram] Bot starting...")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()

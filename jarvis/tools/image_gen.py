@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import io
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -82,7 +80,8 @@ def _describe_image(image_path: str) -> str:
 def _analyze_image(image_path: str, question: str) -> str:
     """Answer a specific question about an image using Claude vision."""
     try:
-        import anthropic, base64
+        import anthropic
+        import base64
         data = Path(image_path).read_bytes()
         b64 = base64.standard_b64encode(data).decode()
         ext = Path(image_path).suffix.lstrip(".").lower()

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import signal
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,8 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
 

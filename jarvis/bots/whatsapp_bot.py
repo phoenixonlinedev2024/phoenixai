@@ -4,7 +4,6 @@ or Meta Cloud API (free tier for production).
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 from fastapi import Request

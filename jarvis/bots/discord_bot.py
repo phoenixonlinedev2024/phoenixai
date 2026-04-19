@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 from jarvis.config import cfg
@@ -53,7 +52,7 @@ async def run_discord_bot(jarvis: "Jarvis") -> None:
     @bot.command(name="jmemory")
     async def memory_cmd(ctx):
         lessons = jarvis.memory.get_lessons(limit=5)
-        text = "Recent lessons:\n" + "\n".join(f"• {l}" for l in lessons) if lessons else "No lessons yet."
+        text = "Recent lessons:\n" + "\n".join(f"• {lesson}" for lesson in lessons) if lessons else "No lessons yet."
         await ctx.send(text)
 
     @bot.event

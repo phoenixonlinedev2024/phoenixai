@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import tempfile
 import uuid
-from pathlib import Path
 
 from jarvis.sandbox.base import ExecResult, SandboxBackend
 from jarvis.config import cfg

@@ -35,7 +35,7 @@ def _list_installed(filter_str: str = "") -> str:
         )
         lines = result.stdout.strip().splitlines()
         if filter_str:
-            lines = [l for l in lines if filter_str.lower() in l.lower()]
+            lines = [line for line in lines if filter_str.lower() in line.lower()]
         return "\n".join(lines[:50]) or "No matching packages."
     except Exception as exc:
         return f"List error: {exc}"

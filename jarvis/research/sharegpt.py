@@ -39,7 +39,7 @@ def to_sharegpt(trajectory: "Trajectory") -> dict:
 
 def compress_trajectory(trajectory: "Trajectory", max_turns: int = 20) -> "Trajectory":
     """Compress a long trajectory by keeping first turn, last N turns, and highest-reward turns."""
-    from jarvis.research.trajectory import Trajectory, Turn
+    from jarvis.research.trajectory import Trajectory
 
     if len(trajectory.turns) <= max_turns:
         return trajectory

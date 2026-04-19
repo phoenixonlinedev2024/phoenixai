@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
-import queue
 import threading
 from typing import Callable
 
@@ -51,8 +49,7 @@ class WhisperSTT:
     def _listen_loop(self, on_transcript: Callable[[str], None]) -> None:
         try:
             import speech_recognition as sr
-            import whisper
-            import numpy as np
+            import numpy as np  # noqa: F401 — needed for whisper audio processing
         except ImportError as e:
             print(f"[JARVIS Whisper] Missing dependency: {e}")
             return
@@ -91,7 +88,6 @@ class WhisperSTT:
     def _record_and_transcribe(self, timeout: int) -> str | None:
         try:
             import speech_recognition as sr
-            import whisper
             import numpy as np
 
             model = _load_model(self.model_size)

@@ -1,7 +1,6 @@
 """Object storage tools — S3, R2 (Cloudflare free), MinIO via boto3."""
 
 from __future__ import annotations
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 

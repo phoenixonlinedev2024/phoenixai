@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any
 
 from jarvis.config import cfg
@@ -77,7 +76,7 @@ class LearningEngine:
             fact_lines = [f"  - {f['key']}: {f['value']}" for f in facts[:20]]
             parts.append("## Known Facts\n" + "\n".join(fact_lines))
         if lessons:
-            lesson_lines = [f"  - {l}" for l in lessons]
+            lesson_lines = [f"  - {lesson}" for lesson in lessons]
             parts.append("## Lessons Learned\n" + "\n".join(lesson_lines))
 
         if not parts:

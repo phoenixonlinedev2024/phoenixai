@@ -1,7 +1,6 @@
 """PDF tools — extract text, tables, metadata from PDF files."""
 
 from __future__ import annotations
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,7 +26,8 @@ def _read_pdf(path: str, pages: str = "") -> str:
 
 def _extract_pdf_tables(path: str, page: int = 0) -> str:
     try:
-        import pdfplumber, json
+        import pdfplumber
+        import json
         with pdfplumber.open(path) as pdf:
             p = pdf.pages[page]
             tables = p.extract_tables()
@@ -42,7 +42,8 @@ def _extract_pdf_tables(path: str, page: int = 0) -> str:
 
 def _pdf_metadata(path: str) -> str:
     try:
-        import pdfplumber, json
+        import pdfplumber
+        import json
         with pdfplumber.open(path) as pdf:
             meta = pdf.metadata or {}
             return json.dumps({"pages": len(pdf.pages), **meta}, indent=2)

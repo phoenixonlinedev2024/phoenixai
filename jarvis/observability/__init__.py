@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -124,7 +123,7 @@ class MetricsRegistry:
 
     def prometheus_text(self) -> str:
         lines = [
-            f"# HELP jarvis_uptime_seconds Seconds since JARVIS started",
+            "# HELP jarvis_uptime_seconds Seconds since JARVIS started",
             f"jarvis_uptime_seconds {round(time.time() - self._start_time, 2)}",
         ]
         for name, c in self._counters.items():

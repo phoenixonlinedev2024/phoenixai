@@ -1,0 +1,7 @@
+# Minimal dependencies for running the test suite in CI.
+# Heavy optional deps (playwright, chromadb, torch, etc.) are NOT needed
+# because tests use mocks and optional-import guards.
+pytest>=8.0
+pytest-asyncio>=0.23
+python-dotenv>=1.0.0
+PyYAML>=6.0

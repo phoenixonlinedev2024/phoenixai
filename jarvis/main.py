@@ -56,7 +56,7 @@ def chat(
 
         if message:
             if stream:
-                console.print(f"\n[bold cyan]JARVIS:[/bold cyan] ", end="")
+                console.print("\n[bold cyan]JARVIS:[/bold cyan] ", end="")
                 full = ""
                 async for token in jarvis.stream_chat(message):
                     console.print(token, end="", highlight=False)
@@ -84,7 +84,7 @@ def chat(
                     break
 
                 if stream:
-                    console.print(f"\n[bold cyan]JARVIS:[/bold cyan] ", end="")
+                    console.print("\n[bold cyan]JARVIS:[/bold cyan] ", end="")
                     full = ""
                     async for token in jarvis.stream_chat(user_input):
                         console.print(token, end="", highlight=False)
@@ -95,7 +95,7 @@ def chat(
                 else:
                     with console.status("[cyan]JARVIS...[/cyan]"):
                         reply = await jarvis.chat(user_input)
-                    console.print(f"\n[bold cyan]JARVIS:[/bold cyan]")
+                    console.print("\n[bold cyan]JARVIS:[/bold cyan]")
                     console.print(Markdown(reply))
                     console.print()
                     if tts:
@@ -214,7 +214,7 @@ def memory() -> None:
                             title="Stored Facts", border_style="blue"))
     lessons = jarvis.memory.get_lessons(limit=20)
     if lessons:
-        console.print(Panel("\n".join(f"  • {l}" for l in lessons),
+        console.print(Panel("\n".join(f"  • {lesson}" for lesson in lessons),
                             title="Lessons Learned", border_style="green"))
     gaps = jarvis.memory.get_open_gaps()
     if gaps:
@@ -250,7 +250,6 @@ def install_piper(
 ) -> None:
     """Download and set up Piper TTS (high-quality offline neural voice)."""
     import platform
-    import subprocess
     import urllib.request
 
     system = platform.system().lower()
@@ -308,7 +307,7 @@ def install_piper(
 
     binary = out / "piper" / ("piper.exe" if system == "windows" else "piper")
     console.print(f"[green]Piper installed to {out}[/green]")
-    console.print(f"[dim]Add to .env:[/dim]")
+    console.print("[dim]Add to .env:[/dim]")
     console.print(f"  PIPER_BINARY={binary}")
     console.print(f"  PIPER_MODEL={out / f'{model}.onnx'}")
 
