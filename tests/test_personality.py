@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from jarvis.personality import (
     JARVIS_CAPABILITY_CREATED_TEMPLATE,
     JARVIS_LEARNING_TEMPLATE,
