@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -23,6 +23,53 @@ from jarvis.personality import JARVIS_VOICE_INTRO, JARVIS_WAKE_RESPONSES
 from jarvis.observability import metrics
 from jarvis.security import key_store, rate_limiter, SecurityMiddleware
 from jarvis.acp import bus as acp_bus
+
+# ---------------------------------------------------------------------------
+# Pydantic request/response models — must be module-level so that
+# FastAPI can resolve their type annotations under PEP 563 (annotations future).
+# ---------------------------------------------------------------------------
+
+
+class ChatRequest(BaseModel):
+    message: str
+    voice_mode: bool = False
+    profile: str = "default"
+
+
+class ChatResponse(BaseModel):
+    response: str
+    session_id: str
+    timestamp: str
+
+
+class ScheduleRequest(BaseModel):
+    name: str
+    cron: str
+    prompt: str
+
+
+class MonitorRequest(BaseModel):
+    name: str
+    target_type: str
+    target: str
+    action: str
+
+
+class ProfileRequest(BaseModel):
+    profile: str
+
+
+class KeyRequest(BaseModel):
+    name: str = ""
+    role: str = "user"
+
+
+class NLScheduleRequest(BaseModel):
+    name: str
+    schedule: str
+    prompt: str
+    priority: str = "NORMAL"
+    tags: list[str] = []
 
 if TYPE_CHECKING:
     from jarvis.core import Jarvis
@@ -46,32 +93,6 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    # ── Pydantic models ──────────────────────────────────────────────────
-
-    class ChatRequest(BaseModel):
-        message: str
-        voice_mode: bool = False
-        profile: str = "default"
-
-    class ChatResponse(BaseModel):
-        response: str
-        session_id: str
-        timestamp: str
-
-    class ScheduleRequest(BaseModel):
-        name: str
-        cron: str
-        prompt: str
-
-    class MonitorRequest(BaseModel):
-        name: str
-        target_type: str  # url | file
-        target: str
-        action: str
-
-    class ProfileRequest(BaseModel):
-        profile: str
 
     # ── REST endpoints ───────────────────────────────────────────────────
 
@@ -181,7 +202,7 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
         return {"skills": [s.to_dict() for s in jarvis.skills.all()]}
 
     @app.post("/skills/activate")
-    async def activate_skill(body: dict):
+    async def activate_skill(body: dict = Body(default={})):
         name = body.get("name", "")
         ok = jarvis.activate_skill(name)
         return {"activated": ok, "skill": name}
@@ -196,14 +217,14 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
         return jarvis.trajectories.stats()
 
     @app.post("/trajectories/export")
-    async def export_trajectories(body: dict = {}):
+    async def export_trajectories(body: dict = Body(default={})):
         from jarvis.research.sharegpt import export_dataset
         path = body.get("output", "jarvis_dataset.jsonl")
         msg = export_dataset(jarvis.trajectories, output_path=path)
         return {"message": msg}
 
     @app.post("/trajectories/export/atropos")
-    async def export_atropos(body: dict = {}):
+    async def export_atropos(body: dict = Body(default={})):
         from jarvis.research.sharegpt import export_atropos_format
         path = body.get("output", "jarvis_atropos.jsonl")
         msg = export_atropos_format(jarvis.trajectories, output_path=path)
@@ -236,10 +257,6 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
         return metrics.snapshot()
 
     # ── Security / key management ────────────────────────────────────────
-
-    class KeyRequest(BaseModel):
-        name: str = ""
-        role: str = "user"
 
     @app.get("/security/keys")
     async def list_api_keys():
@@ -301,13 +318,6 @@ def create_app(jarvis: "Jarvis") -> FastAPI:
         return evolver.capability_report()
 
     # ── Advanced scheduling ──────────────────────────────────────────────
-
-    class NLScheduleRequest(BaseModel):
-        name: str
-        schedule: str
-        prompt: str
-        priority: str = "NORMAL"
-        tags: list[str] = []
 
     @app.post("/schedule/nl")
     async def schedule_nl(req: NLScheduleRequest):
