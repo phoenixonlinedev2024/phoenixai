@@ -254,6 +254,110 @@ def test_db_tools_register():
     assert {"db_query", "db_schema", "db_execute"} <= names
 
 
+# ── database_tools with mocked SQLAlchemy ─────────────────────────────────────
+
+def _make_fake_sqlalchemy(returns_rows=True, rows=None, cols=None, rowcount=1):
+    """Build a fake sqlalchemy module with controllable result."""
+    if rows is None:
+        rows = [(42,)]
+    if cols is None:
+        cols = ["val"]
+
+    fake_result = MagicMock()
+    fake_result.returns_rows = returns_rows
+    fake_result.keys.return_value = cols
+    fake_result.fetchmany.return_value = [tuple(v for v in zip(cols, r))[0] if len(cols) == 1 else r
+                                          for r in rows]
+    fake_result.rowcount = rowcount
+
+    fake_conn = MagicMock()
+    fake_conn.execute.return_value = fake_result
+    fake_conn.__enter__ = MagicMock(return_value=fake_conn)
+    fake_conn.__exit__ = MagicMock(return_value=False)
+
+    fake_engine = MagicMock()
+    fake_engine.connect.return_value = fake_conn
+    fake_engine.begin.return_value = fake_conn
+
+    fake_sa = MagicMock()
+    fake_sa.create_engine.return_value = fake_engine
+    fake_sa.text = MagicMock(side_effect=lambda s: s)
+    fake_sa.inspect.return_value = MagicMock(
+        get_table_names=MagicMock(return_value=["users", "orders"]),
+        get_columns=MagicMock(return_value=[{"name": "id", "type": "INTEGER"}]),
+        get_pk_constraint=MagicMock(return_value={"constrained_columns": ["id"]}),
+        get_foreign_keys=MagicMock(return_value=[]),
+    )
+    return fake_sa, fake_engine, fake_conn, fake_result
+
+
+def test_db_query_mocked_select():
+    from jarvis.tools.database_tools import _db_query
+    fake_sa, _, _, fake_result = _make_fake_sqlalchemy(returns_rows=True)
+    fake_result.keys.return_value = ["val"]
+    fake_result.fetchmany.return_value = [(42,)]
+    with patch.dict(sys.modules, {"sqlalchemy": fake_sa}):
+        out = _db_query("sqlite:///:memory:", "SELECT 1 AS val")
+    data = json.loads(out)
+    assert "columns" in data
+    assert "rows" in data
+
+
+def test_db_query_mocked_non_select():
+    from jarvis.tools.database_tools import _db_query
+    fake_sa, _, _, fake_result = _make_fake_sqlalchemy(returns_rows=False, rowcount=3)
+    with patch.dict(sys.modules, {"sqlalchemy": fake_sa}):
+        out = _db_query("sqlite:///:memory:", "INSERT INTO t VALUES (1)")
+    assert "Rows affected: 3" in out
+
+
+def test_db_execute_mocked():
+    from jarvis.tools.database_tools import _db_execute
+    fake_sa, _, _, fake_result = _make_fake_sqlalchemy(returns_rows=False, rowcount=2)
+    with patch.dict(sys.modules, {"sqlalchemy": fake_sa}):
+        out = _db_execute("sqlite:///:memory:", "DELETE FROM t")
+    assert "Executed" in out
+    assert "2" in out
+
+
+def test_db_schema_mocked_list_tables():
+    from jarvis.tools.database_tools import _db_schema
+    fake_sa, _, _, _ = _make_fake_sqlalchemy()
+    with patch.dict(sys.modules, {"sqlalchemy": fake_sa}):
+        out = _db_schema("sqlite:///:memory:")
+    assert "users" in out
+    assert "Tables" in out
+
+
+def test_db_schema_mocked_with_table():
+    from jarvis.tools.database_tools import _db_schema
+    fake_sa, _, _, _ = _make_fake_sqlalchemy()
+    with patch.dict(sys.modules, {"sqlalchemy": fake_sa}):
+        out = _db_schema("sqlite:///:memory:", table="users")
+    import json as _json
+    data = _json.loads(out)
+    assert data["table"] == "users"
+    assert "columns" in data
+
+
+def test_db_query_mocked_exception():
+    from jarvis.tools.database_tools import _db_query
+    fake_sa = MagicMock()
+    fake_sa.create_engine.side_effect = RuntimeError("connection refused")
+    with patch.dict(sys.modules, {"sqlalchemy": fake_sa}):
+        out = _db_query("bad://url", "SELECT 1")
+    assert "DB query error" in out
+
+
+def test_db_execute_mocked_exception():
+    from jarvis.tools.database_tools import _db_execute
+    fake_sa = MagicMock()
+    fake_sa.create_engine.side_effect = RuntimeError("bad connection")
+    with patch.dict(sys.modules, {"sqlalchemy": fake_sa}):
+        out = _db_execute("bad://url", "DROP TABLE x")
+    assert "Execute error" in out
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # pdf_tools._parse_pages (pure logic, no pdfplumber needed)
 # ══════════════════════════════════════════════════════════════════════════════

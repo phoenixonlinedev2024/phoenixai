@@ -68,6 +68,78 @@ def test_browser_register_tools_populates_registry():
         assert registry.get(name) is not None
 
 
+def _make_fake_playwright(content="page text"):
+    """Build a minimal async playwright mock tree."""
+    from unittest.mock import AsyncMock
+    fake_page = MagicMock()
+    fake_page.goto = AsyncMock()
+    fake_page.inner_text = AsyncMock(return_value=content)
+    fake_page.wait_for_selector = AsyncMock()
+    fake_page.click = AsyncMock()
+    fake_page.wait_for_load_state = AsyncMock()
+    fake_page.fill = AsyncMock()
+    fake_page.screenshot = AsyncMock()
+
+    fake_browser = MagicMock()
+    fake_browser.new_page = AsyncMock(return_value=fake_page)
+    fake_browser.close = AsyncMock()
+
+    fake_chromium = MagicMock()
+    fake_chromium.launch = AsyncMock(return_value=fake_browser)
+
+    fake_p = MagicMock()
+    fake_p.chromium = fake_chromium
+
+    fake_ctx = MagicMock()
+    fake_ctx.__aenter__ = AsyncMock(return_value=fake_p)
+    fake_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    fake_pw_module = MagicMock()
+    fake_pw_module.async_playwright = MagicMock(return_value=fake_ctx)
+
+    return fake_pw_module, fake_page, fake_browser
+
+
+def test_browser_fetch_success():
+    fake_pw, _, _ = _make_fake_playwright("rendered content")
+    with patch.dict(sys.modules, {"playwright": MagicMock(), "playwright.async_api": fake_pw}):
+        out = _browser_fetch("https://example.com")
+    assert "rendered content" in out
+
+
+def test_browser_fetch_with_wait_for():
+    fake_pw, fake_page, _ = _make_fake_playwright("waited content")
+    with patch.dict(sys.modules, {"playwright": MagicMock(), "playwright.async_api": fake_pw}):
+        out = _browser_fetch("https://example.com", wait_for="#main")
+    assert "waited content" in out
+    fake_page.wait_for_selector.assert_awaited_once_with("#main", timeout=10000)
+
+
+def test_browser_click_success():
+    fake_pw, fake_page, _ = _make_fake_playwright("clicked page")
+    with patch.dict(sys.modules, {"playwright": MagicMock(), "playwright.async_api": fake_pw}):
+        out = _browser_click_and_read("https://example.com", ".btn")
+    assert "clicked page" in out
+    fake_page.click.assert_awaited_once_with(".btn")
+
+
+def test_browser_fill_form_success():
+    fake_pw, fake_page, _ = _make_fake_playwright("form submitted")
+    with patch.dict(sys.modules, {"playwright": MagicMock(), "playwright.async_api": fake_pw}):
+        out = _browser_fill_form("https://example.com", {"#name": "Tony", "#pw": "secret"}, "#submit")
+    assert "form submitted" in out
+    assert fake_page.fill.await_count == 2
+
+
+def test_take_screenshot_success(tmp_path):
+    fake_pw, fake_page, _ = _make_fake_playwright()
+    out_path = str(tmp_path / "shot.png")
+    with patch.dict(sys.modules, {"playwright": MagicMock(), "playwright.async_api": fake_pw}):
+        out = _take_screenshot("https://example.com", output_path=out_path)
+    assert out_path in out
+    fake_page.screenshot.assert_awaited_once_with(path=out_path, full_page=True)
+
+
 # ── _generate_image_hf ────────────────────────────────────────────────────────
 
 def test_generate_image_hf_success(tmp_path, monkeypatch):
