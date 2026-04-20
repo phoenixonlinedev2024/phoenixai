@@ -180,3 +180,121 @@ async def test_router_falls_back_when_preferred_unhealthy(monkeypatch):
 
     backend = await r.get_backend("docker")
     assert isinstance(backend, LocalSandbox)
+
+
+# ── DockerSandbox (client mocked) ─────────────────────────────────────────────
+
+def test_docker_get_client_raises_without_sdk():
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    sb = DockerSandbox()
+    with patch.dict(sys.modules, {"docker": None}):
+        sb._client = None
+        with pytest.raises(RuntimeError, match="docker SDK not installed"):
+            sb._get_client()
+
+
+@pytest.mark.asyncio
+async def test_docker_health_check_true(monkeypatch):
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    sb = DockerSandbox()
+    fake_client = MagicMock()
+    fake_client.ping = MagicMock(return_value=True)
+    sb._client = fake_client
+    assert await sb.health_check() is True
+
+
+@pytest.mark.asyncio
+async def test_docker_health_check_false_on_error(monkeypatch):
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    sb = DockerSandbox()
+    fake_client = MagicMock()
+    fake_client.ping = MagicMock(side_effect=RuntimeError("daemon down"))
+    sb._client = fake_client
+    assert await sb.health_check() is False
+
+
+@pytest.mark.asyncio
+async def test_docker_run_code_unsupported_language():
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    sb = DockerSandbox()
+    result = await sb.run_code("val x = 1", language="scala")
+    assert result.exit_code == 1
+    assert "not supported" in result.stderr.lower()
+
+
+def test_docker_run_sync_wraps_output():
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    sb = DockerSandbox()
+    fake_client = MagicMock()
+    fake_client.containers.run = MagicMock(return_value=b"hello from docker")
+    sb._client = fake_client
+    result = sb._run_sync(["echo", "hi"], timeout=5, workdir="/tmp", volumes=None)
+    assert "hello from docker" in result.stdout
+    assert result.exit_code == 0
+
+
+def test_docker_run_sync_handles_exception():
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    sb = DockerSandbox()
+    fake_client = MagicMock()
+    fake_client.containers.run = MagicMock(side_effect=RuntimeError("container failed"))
+    sb._client = fake_client
+    result = sb._run_sync(["bad"], timeout=5, workdir="/tmp", volumes=None)
+    assert result.exit_code == 1
+    assert "Docker error" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_docker_write_and_read_file(tmp_path):
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    sb = DockerSandbox()
+    path = str(tmp_path / "out.txt")
+    await sb.write_file(path, "docker test")
+    assert await sb.read_file(path) == "docker test"
+
+
+# ── SSHSandbox (paramiko mocked) ──────────────────────────────────────────────
+
+def test_ssh_connect_raises_without_paramiko():
+    from jarvis.sandbox.ssh_sandbox import SSHSandbox
+    sb = SSHSandbox(host="localhost")
+    with patch.dict(sys.modules, {"paramiko": None}):
+        with pytest.raises(RuntimeError, match="paramiko not installed"):
+            sb._connect()
+
+
+def test_ssh_exec_returns_exec_result():
+    from jarvis.sandbox.ssh_sandbox import SSHSandbox
+    sb = SSHSandbox(host="localhost", username="user")
+
+    fake_conn = MagicMock()
+    fake_stdout = MagicMock()
+    fake_stdout.read.return_value = b"output"
+    fake_stdout.channel.recv_exit_status.return_value = 0
+    fake_stderr = MagicMock()
+    fake_stderr.read.return_value = b""
+    fake_conn.exec_command.return_value = (None, fake_stdout, fake_stderr)
+
+    result = sb._exec("echo hello", timeout=5, conn=fake_conn)
+    assert result.stdout == "output"
+    assert result.exit_code == 0
+
+
+def test_ssh_exec_handles_exception():
+    from jarvis.sandbox.ssh_sandbox import SSHSandbox
+    sb = SSHSandbox(host="localhost", username="user")
+
+    fake_conn = MagicMock()
+    fake_conn.exec_command.side_effect = RuntimeError("channel closed")
+
+    result = sb._exec("cmd", timeout=5, conn=fake_conn)
+    assert result.exit_code == 1
+    assert "channel closed" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_ssh_health_check_false_when_connect_fails(monkeypatch):
+    from jarvis.sandbox.ssh_sandbox import SSHSandbox
+    sb = SSHSandbox(host="localhost")
+    monkeypatch.setattr(sb, "_connect", lambda: (_ for _ in ()).throw(RuntimeError("refused")))
+    assert await sb.health_check() is False
