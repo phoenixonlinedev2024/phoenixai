@@ -69,6 +69,66 @@ def test_export_pdf_missing_reportlab(memory_store):
     assert "reportlab" in result.lower()
 
 
+def _fake_reportlab():
+    """Build a minimal fake reportlab module hierarchy."""
+    fake_doc = MagicMock()
+    fake_styles = MagicMock()
+    fake_styles.__getitem__ = MagicMock(return_value=MagicMock())
+
+    fake_pagesizes = MagicMock()
+    fake_pagesizes.A4 = (595, 842)
+
+    fake_styles_mod = MagicMock()
+    fake_styles_mod.getSampleStyleSheet = MagicMock(return_value=fake_styles)
+    fake_styles_mod.ParagraphStyle = MagicMock(return_value=MagicMock())
+
+    fake_units = MagicMock()
+    fake_units.cm = 28.35
+
+    fake_colors = MagicMock()
+
+    fake_platypus = MagicMock()
+    fake_platypus.SimpleDocTemplate = MagicMock(return_value=fake_doc)
+    fake_platypus.Paragraph = MagicMock(return_value=MagicMock())
+    fake_platypus.Spacer = MagicMock(return_value=MagicMock())
+    fake_platypus.HRFlowable = MagicMock(return_value=MagicMock())
+
+    return {
+        "reportlab": MagicMock(),
+        "reportlab.lib": MagicMock(),
+        "reportlab.lib.pagesizes": fake_pagesizes,
+        "reportlab.lib.styles": fake_styles_mod,
+        "reportlab.lib.units": fake_units,
+        "reportlab.lib.colors": fake_colors,
+        "reportlab.platypus": fake_platypus,
+    }, fake_doc
+
+
+def test_export_pdf_no_history(memory_store):
+    from jarvis.export import export_pdf
+    mods, _ = _fake_reportlab()
+    with patch.dict(sys.modules, mods):
+        result = export_pdf(memory_store, "empty-session")
+    assert "No conversation" in result
+
+
+def test_export_pdf_success(memory_store, tmp_path):
+    """export_pdf should build the PDF when reportlab is available (mocked)."""
+    memory_store.save_message("s1", "user", "Hello")
+    memory_store.save_message("s1", "assistant", "Greetings, Sir.")
+
+    out_path = str(tmp_path / "out.pdf")
+    mods, fake_doc = _fake_reportlab()
+
+    from jarvis.export import export_pdf
+    with patch.dict(sys.modules, mods):
+        result = export_pdf(memory_store, "s1", output_path=out_path)
+
+    assert "Exported" in result
+    assert "2" in result
+    fake_doc.build.assert_called_once()
+
+
 # ── ProactiveMonitor ──────────────────────────────────────────────────────────
 
 def _make_jarvis_mock():

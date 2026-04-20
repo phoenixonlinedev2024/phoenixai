@@ -372,3 +372,200 @@ async def test_run_agent_loop_max_iterations(jarvis_instance, monkeypatch):
 
     result = await jarvis_instance._run_agent_loop("keep going", voice_mode=False)
     assert "maximum reasoning depth" in result.lower() or "max" in result.lower()
+
+
+# ── __init__ edge cases ───────────────────────────────────────────────────────
+
+def test_init_raises_without_api_key(monkeypatch, tmp_data_dir):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr("jarvis.config.cfg.ANTHROPIC_API_KEY", "")
+    from jarvis.core import Jarvis
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY not set"):
+        Jarvis()
+
+
+def test_get_model_returns_config_model(jarvis_instance, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.CLAUDE_MODEL", "claude-test-4-0")
+    assert jarvis_instance._get_model() == "claude-test-4-0"
+
+
+def test_init_with_trajectory_collection(monkeypatch, tmp_data_dir):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-placeholder")
+    monkeypatch.setattr("jarvis.config.cfg.TRAJECTORY_COLLECTION", True)
+    with patch("jarvis.plugins.loader.PluginLoader") as MockLoader:
+        MockLoader.return_value.load_all.return_value = 0
+        MockLoader.return_value.start_hot_reload.return_value = None
+        from jarvis.core import Jarvis
+        j = Jarvis()
+    assert j.trajectories is not None
+
+
+def test_new_session_with_trajectory_collection(jarvis_instance, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.TRAJECTORY_COLLECTION", True)
+    old_id = jarvis_instance._session_id
+    jarvis_instance.new_session(task="new task")
+    assert jarvis_instance._session_id != old_id
+
+
+@pytest.mark.asyncio
+async def test_chat_with_trajectory_collection(jarvis_instance, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.TRAJECTORY_COLLECTION", True)
+    jarvis_instance.semantic.store_conversation_snippet = MagicMock()
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+
+    async def fake_loop(msg, voice):
+        return "trajectory response"
+
+    monkeypatch.setattr(jarvis_instance, "_run_agent_loop", fake_loop)
+    result = await jarvis_instance.chat("trajectory test")
+    assert result == "trajectory response"
+
+
+# ── Confidence threshold ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_agent_loop_confidence_retry(jarvis_instance, monkeypatch):
+    """When confidence is below threshold, the loop should retry once."""
+    monkeypatch.setattr("jarvis.config.cfg.CONFIDENCE_THRESHOLD", 0.9)
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+
+    call_count = [0]
+
+    def make_text_response(text):
+        block = MagicMock()
+        block.type = "text"
+        block.text = text
+        return MagicMock(content=[block], stop_reason="end_turn")
+
+    async def fake_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return make_text_response("low quality answer")
+        return make_text_response("high quality answer")
+
+    jarvis_instance.client.messages.create = fake_create
+
+    # score_confidence returns 0.5 on first call (below threshold) then not called
+    jarvis_instance.planner.score_confidence = AsyncMock(side_effect=[0.5, 0.95])
+
+    result = await jarvis_instance._run_agent_loop("test question", voice_mode=False)
+    assert call_count[0] == 2
+    assert result == "high quality answer"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_loop_no_confidence_check_in_voice_mode(jarvis_instance, monkeypatch):
+    """Voice mode should skip confidence check."""
+    monkeypatch.setattr("jarvis.config.cfg.CONFIDENCE_THRESHOLD", 0.9)
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+
+    block = MagicMock()
+    block.type = "text"
+    block.text = "voice answer"
+    jarvis_instance.client.messages.create = AsyncMock(return_value=MagicMock(content=[block]))
+
+    jarvis_instance.planner.score_confidence = AsyncMock()
+    result = await jarvis_instance._run_agent_loop("hello", voice_mode=True)
+    assert result == "voice answer"
+    jarvis_instance.planner.score_confidence.assert_not_called()
+
+
+# ── Stream chat with tool calls ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_stream_chat_with_tool_calls(jarvis_instance, monkeypatch):
+    """Stream loop should handle tool-use events and continue."""
+    from jarvis.tools.registry import Tool
+    jarvis_instance.registry.register(Tool(
+        name="ping",
+        description="ping",
+        input_schema={"type": "object", "properties": {}},
+        fn=lambda: "pong",
+        category="test",
+    ))
+    jarvis_instance.semantic.store_conversation_snippet = MagicMock()
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+
+    StartEvent = type("RawContentBlockStartEvent", (), {})
+    StopEvent = type("RawContentBlockStopEvent", (), {})
+    DeltaEvent = type("RawContentBlockDeltaEvent", (), {})
+
+    def make_tool_start():
+        e = StartEvent()
+        cb = MagicMock()
+        cb.type = "tool_use"
+        cb.id = "t1"
+        cb.name = "ping"
+        e.content_block = cb
+        return e
+
+    def make_tool_json():
+        e = DeltaEvent()
+        e.delta = MagicMock(text=None, partial_json="{}")
+        return e
+
+    def make_stop():
+        return StopEvent()
+
+    def make_text_event(text):
+        e = DeltaEvent()
+        e.delta = MagicMock(text=text, partial_json=None)
+        return e
+
+    iteration = [0]
+
+    class FakeStreamCtx:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            if iteration[0] == 0:
+                # First iteration: tool call
+                iteration[0] += 1
+                yield make_tool_start()
+                yield make_tool_json()
+                yield make_stop()
+            else:
+                # Second iteration: text response
+                yield make_text_event("done")
+
+        async def get_final_message(self):
+            return MagicMock(content=[])
+
+    jarvis_instance.client.messages.stream = MagicMock(return_value=FakeStreamCtx())
+
+    tokens = []
+    async for token in jarvis_instance.stream_chat("use a tool"):
+        tokens.append(token)
+
+    assert "done" in tokens
+
+
+# ── _execute_tool async function ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_execute_tool_async_function(jarvis_instance):
+    from jarvis.tools.registry import Tool
+
+    async def async_fn(x):
+        return f"async:{x}"
+
+    jarvis_instance.registry.register(Tool(
+        name="async_echo",
+        description="Async echo",
+        input_schema={"type": "object", "properties": {"x": {"type": "string"}}},
+        fn=async_fn,
+        category="test",
+    ))
+    result = await jarvis_instance._execute_tool("async_echo", {"x": "hello"})
+    assert result == "async:hello"
