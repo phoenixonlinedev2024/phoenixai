@@ -298,3 +298,96 @@ async def test_ssh_health_check_false_when_connect_fails(monkeypatch):
     sb = SSHSandbox(host="localhost")
     monkeypatch.setattr(sb, "_connect", lambda: (_ for _ in ()).throw(RuntimeError("refused")))
     assert await sb.health_check() is False
+
+
+# ── ModalSandbox ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_modal_health_check_true_when_modal_installed():
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+    sb = ModalSandbox()
+    # modal is in sys.modules as a MagicMock (injected at top)
+    result = await sb.health_check()
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_modal_health_check_false_when_import_fails(monkeypatch):
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "modal":
+            raise ImportError("no module named modal")
+        return real_import(name, *args, **kwargs)
+
+    sb = ModalSandbox()
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    result = await sb.health_check()
+    assert result is False
+    monkeypatch.setattr(builtins, "__import__", real_import)
+
+
+@pytest.mark.asyncio
+async def test_modal_run_code_unsupported_language():
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+    sb = ModalSandbox()
+    result = await sb.run_code("print('hi')", language="bash")
+    assert result.exit_code == 1
+    assert "Python only" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_modal_run_modal_error_returns_exec_result():
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+    sb = ModalSandbox()
+    # _run_modal raises because mock modal doesn't have .App etc.
+    result = sb._run_modal("echo hi", 30)
+    assert isinstance(result.stderr, str)
+
+
+@pytest.mark.asyncio
+async def test_modal_write_and_read_file(tmp_path):
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+    sb = ModalSandbox()
+    path = str(tmp_path / "modal_test.txt")
+    await sb.write_file(path, "modal content")
+    content = await sb.read_file(path)
+    assert content == "modal content"
+
+
+# ── SingularitySandbox ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_singularity_health_check_false_when_not_available():
+    from jarvis.sandbox.modal_sandbox import SingularitySandbox
+    sb = SingularitySandbox()
+    # singularity binary doesn't exist in test env
+    result = await sb.health_check()
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_singularity_run_code_delegates_to_run(monkeypatch):
+    from jarvis.sandbox.modal_sandbox import SingularitySandbox
+    from jarvis.sandbox.base import ExecResult
+    sb = SingularitySandbox()
+    fake_result = ExecResult(stdout="code output", exit_code=0)
+
+    async def fake_run(cmd, timeout=30):
+        return fake_result
+
+    monkeypatch.setattr(sb, "run", fake_run)
+    result = await sb.run_code("print('hi')", language="python")
+    assert result.stdout == "code output"
+
+
+@pytest.mark.asyncio
+async def test_singularity_write_and_read_file(tmp_path):
+    from jarvis.sandbox.modal_sandbox import SingularitySandbox
+    sb = SingularitySandbox()
+    path = str(tmp_path / "sing_test.txt")
+    await sb.write_file(path, "singularity data")
+    content = await sb.read_file(path)
+    assert content == "singularity data"
