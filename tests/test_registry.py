@@ -13,9 +13,12 @@ from jarvis.tools.registry import (
     _execute_python,
     _get_system_info,
     _list_directory,
+    _read_file,
+    _run_shell,
     _web_fetch,
     _web_search,
     _write_and_run_code,
+    _write_file,
 )
 
 
@@ -380,3 +383,69 @@ def test_write_and_run_code_timeout():
 def test_write_and_run_code_bash(tmp_path):
     out = _write_and_run_code("bash", "echo 'bash works'")
     assert "bash works" in out
+
+
+# ── _read_file ────────────────────────────────────────────────────────────────
+
+def test_read_file_returns_content(tmp_path):
+    f = tmp_path / "hello.txt"
+    f.write_text("hello world", encoding="utf-8")
+    out = _read_file(str(f))
+    assert out == "hello world"
+
+
+def test_read_file_missing_returns_error():
+    out = _read_file("/no/such/file/xyz_missing.txt")
+    assert "Read error" in out
+
+
+# ── _write_file ───────────────────────────────────────────────────────────────
+
+def test_write_file_creates_and_writes(tmp_path):
+    dest = str(tmp_path / "output.txt")
+    out = _write_file(dest, "test content")
+    assert "Written" in out
+    assert Path(dest).read_text() == "test content"
+
+
+def test_write_file_creates_parent_dirs(tmp_path):
+    dest = str(tmp_path / "a" / "b" / "c.txt")
+    _write_file(dest, "nested")
+    assert Path(dest).exists()
+
+
+def test_write_file_reports_char_count(tmp_path):
+    dest = str(tmp_path / "count.txt")
+    out = _write_file(dest, "12345")
+    assert "5" in out
+
+
+# ── _run_shell ────────────────────────────────────────────────────────────────
+
+def test_run_shell_captures_stdout():
+    out = _run_shell("echo hello_from_shell")
+    assert "hello_from_shell" in out
+
+
+def test_run_shell_exit_code_included():
+    out = _run_shell("exit 0", timeout=5)
+    assert "Exit code: 0" in out
+
+
+def test_run_shell_nonzero_exit_code():
+    out = _run_shell("exit 42", timeout=5)
+    assert "42" in out
+
+
+def test_run_shell_timeout():
+    import subprocess
+    with patch("jarvis.tools.registry.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="sleep", timeout=30)):
+        out = _run_shell("sleep 999")
+    assert "timed out" in out.lower()
+
+
+def test_run_shell_exception():
+    with patch("jarvis.tools.registry.subprocess.run", side_effect=OSError("no shell")):
+        out = _run_shell("impossible")
+    assert "Shell error" in out

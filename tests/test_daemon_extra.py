@@ -162,6 +162,30 @@ def test_trajectory_stats(client):
     assert resp.status_code == 200
 
 
+def test_trajectories_export_returns_message(client, tmp_path):
+    out = str(tmp_path / "test_export.jsonl")
+    with patch("jarvis.research.sharegpt.export_dataset", return_value="Exported 0 trajectories"):
+        resp = client.post("/trajectories/export", json={"output": out})
+    assert resp.status_code == 200
+    assert "message" in resp.json()
+
+
+def test_trajectories_export_default_path(client):
+    with patch("jarvis.research.sharegpt.export_dataset", return_value="ok") as mock_exp:
+        resp = client.post("/trajectories/export", json={})
+    assert resp.status_code == 200
+    # default path used when no "output" key provided
+    mock_exp.assert_called_once()
+
+
+def test_trajectories_export_atropos(client, tmp_path):
+    out = str(tmp_path / "atropos.jsonl")
+    with patch("jarvis.research.sharegpt.export_atropos_format", return_value="atropos ok"):
+        resp = client.post("/trajectories/export/atropos", json={"output": out})
+    assert resp.status_code == 200
+    assert "message" in resp.json()
+
+
 # ── Providers ────────────────────────────────────────────────────────────────
 
 def test_providers_health(client):
@@ -182,6 +206,20 @@ def test_sandbox_backends(client):
 
 
 # ── Self-improvement ─────────────────────────────────────────────────────────
+
+def test_self_improve_run(client):
+    fake_result = {
+        "trend": "improving",
+        "new_tools": [],
+        "benchmark_results": [],
+    }
+    with patch("jarvis.self_improve.SelfImproveEngine") as MockEngine:
+        MockEngine.return_value.run_cycle = AsyncMock(return_value=fake_result)
+        resp = client.post("/self-improve/run")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "trend" in data
+
 
 def test_self_improve_capabilities(client):
     resp = client.get("/self-improve/capabilities")
