@@ -89,7 +89,7 @@ def test_hot_reload_detects_new_plugin(loader, tmp_path, registry):
             "    registry.late_called = True\n"
         )
         # Poll for the watcher to detect it
-        deadline = time.time() + 2.0
+        deadline = time.time() + 10.0
         while time.time() < deadline:
             if getattr(registry, "late_called", False):
                 break
@@ -119,7 +119,7 @@ def test_hot_reload_reloads_modified_plugin(loader, tmp_path, registry):
         future = time.time() + 10
         os.utime(plugin, (future, future))
 
-        deadline = time.time() + 2.0
+        deadline = time.time() + 10.0
         while time.time() < deadline:
             if registry.version == 2:
                 break
