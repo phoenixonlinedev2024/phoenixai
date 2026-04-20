@@ -199,3 +199,176 @@ async def test_chat_saves_to_memory(jarvis_instance, monkeypatch):
     contents = [m["content"] for m in history]
     assert "test message" in contents
     assert "Certainly, Sir." in contents
+
+
+# ── Additional coverage ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_voice_chat_delegates_to_chat(jarvis_instance, monkeypatch):
+    called_with = []
+
+    async def fake_chat(msg, voice_mode=False):
+        called_with.append((msg, voice_mode))
+        return "voice reply"
+
+    monkeypatch.setattr(jarvis_instance, "chat", fake_chat)
+    result = await jarvis_instance.voice_chat("wake word detected")
+    assert result == "voice reply"
+    assert called_with == [("wake word detected", True)]
+
+
+@pytest.mark.asyncio
+async def test_end_session_calls_reflect_and_resets(jarvis_instance, monkeypatch):
+    old_sid = jarvis_instance._session_id
+    jarvis_instance._session_transcript = [{"role": "user", "content": "hello"}]
+
+    reflect_called = []
+
+    async def fake_reflect(transcript, client):
+        reflect_called.append(transcript)
+        return {"lessons": ["always test your code"]}
+
+    monkeypatch.setattr(jarvis_instance.learner, "reflect", fake_reflect)
+    jarvis_instance.semantic.store_lesson = MagicMock()
+
+    summary = await jarvis_instance.end_session()
+
+    assert len(reflect_called) == 1
+    assert jarvis_instance._session_id != old_sid  # new_session() was called
+    assert jarvis_instance._session_transcript == []
+    # Should mention the lesson count
+    assert "1" in summary or "lesson" in summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_end_session_no_lessons_returns_default(jarvis_instance, monkeypatch):
+    async def fake_reflect(transcript, client):
+        return {}
+
+    monkeypatch.setattr(jarvis_instance.learner, "reflect", fake_reflect)
+    summary = await jarvis_instance.end_session()
+    assert "Session ended" in summary or "Sir" in summary
+
+
+def test_build_system_includes_active_skill(jarvis_instance):
+    """System prompt should include the skill's prompt when a skill is active."""
+    from jarvis.skills.registry import Skill
+    skill = Skill(name="test_skill", description="d", system_prompt="## Special Mode\nBe extra helpful.")
+    jarvis_instance.skills.register(skill)
+    jarvis_instance.activate_skill("test_skill")
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+    system = jarvis_instance._build_system("hello", voice_mode=False)
+    assert "Special Mode" in system
+    assert "Be extra helpful" in system
+
+
+def test_build_system_no_active_skill(jarvis_instance):
+    jarvis_instance.deactivate_skill()
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+    system = jarvis_instance._build_system("hello", voice_mode=False)
+    assert isinstance(system, str)
+    assert len(system) > 0
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_known_tool(jarvis_instance):
+    from jarvis.tools.registry import Tool
+    jarvis_instance.registry.register(Tool(
+        name="echo",
+        description="Echo input",
+        input_schema={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+        fn=lambda text: f"echo: {text}",
+        category="test",
+    ))
+    result = await jarvis_instance._execute_tool("echo", {"text": "hi"})
+    assert result == "echo: hi"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_unknown_synthesises(jarvis_instance, monkeypatch):
+    from jarvis.tools.registry import Tool
+    synthesised = Tool(
+        name="new_cap", description="desc",
+        input_schema={"type": "object", "properties": {}},
+        fn=lambda **kwargs: "synthesised result",
+        category="general", dynamic=True,
+    )
+    monkeypatch.setattr(
+        "jarvis.core.synthesise_tool",
+        AsyncMock(return_value=synthesised)
+    )
+    result = await jarvis_instance._execute_tool("new_cap", {"description": "some capability"})
+    assert result == "synthesised result"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_synthesise_fails_returns_message(jarvis_instance, monkeypatch):
+    monkeypatch.setattr("jarvis.core.synthesise_tool", AsyncMock(return_value=None))
+    result = await jarvis_instance._execute_tool("phantom_tool", {})
+    assert "Unable to synthesise" in result or "phantom_tool" in result
+
+
+@pytest.mark.asyncio
+async def test_execute_tools_parallel_collects_results(jarvis_instance):
+    from jarvis.tools.registry import Tool
+    jarvis_instance.registry.register(Tool(
+        name="double",
+        description="Doubles",
+        input_schema={"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]},
+        fn=lambda n: str(n * 2),
+        category="test",
+    ))
+    calls = [
+        {"id": "t1", "name": "double", "input": {"n": 3}},
+        {"id": "t2", "name": "double", "input": {"n": 5}},
+    ]
+    results = await jarvis_instance._execute_tools_parallel(calls)
+    assert len(results) == 2
+    contents = {r["tool_use_id"]: r["content"] for r in results}
+    assert contents["t1"] == "6"
+    assert contents["t2"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_execute_tools_parallel_exception_captured(jarvis_instance):
+    from jarvis.tools.registry import Tool
+    jarvis_instance.registry.register(Tool(
+        name="explode",
+        description="Always fails",
+        input_schema={"type": "object", "properties": {}},
+        fn=lambda: (_ for _ in ()).throw(RuntimeError("bang")),
+        category="test",
+    ))
+    calls = [{"id": "e1", "name": "explode", "input": {}}]
+    results = await jarvis_instance._execute_tools_parallel(calls)
+    assert "error" in results[0]["content"].lower() or "bang" in results[0]["content"].lower()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_loop_max_iterations(jarvis_instance, monkeypatch):
+    """After 12 tool-call rounds the loop should return the max-depth message."""
+    # Always return a tool_use block so we never exit normally
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.id = "t"
+    tool_block.name = "echo"
+    tool_block.input = {"text": "x"}
+    resp = MagicMock(content=[tool_block])
+    jarvis_instance.client.messages.create = AsyncMock(return_value=resp)
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+
+    # Register echo so the tool executes without synthesise
+    from jarvis.tools.registry import Tool
+    jarvis_instance.registry.register(Tool(
+        name="echo",
+        description="Echo",
+        input_schema={"type": "object", "properties": {"text": {"type": "string"}}},
+        fn=lambda text="": text,
+        category="test",
+    ))
+
+    result = await jarvis_instance._run_agent_loop("keep going", voice_mode=False)
+    assert "maximum reasoning depth" in result.lower() or "max" in result.lower()
