@@ -217,6 +217,48 @@ def test_stt_listen_loop_missing_speech_recognition(capsys):
     assert "not installed" in captured.out.lower()
 
 
+@pytest.mark.asyncio
+async def test_stt_listen_once_runs_in_executor(monkeypatch):
+    stt = STTEngine()
+    monkeypatch.setattr(stt, "_record_phrase", lambda timeout: "transcribed")
+    result = await stt.listen_once(timeout=5)
+    assert result == "transcribed"
+
+
+def test_stt_record_phrase_returns_text(monkeypatch):
+    stt = STTEngine()
+    fake_audio = MagicMock()
+    fake_sr = MagicMock()
+    fake_recognizer = MagicMock()
+    fake_recognizer.recognize_google.return_value = "hello jarvis"
+    fake_recognizer.listen.return_value = fake_audio
+    fake_sr.Recognizer.return_value = fake_recognizer
+
+    fake_mic = MagicMock()
+    fake_mic.__enter__ = MagicMock(return_value=fake_mic)
+    fake_mic.__exit__ = MagicMock(return_value=False)
+    fake_sr.Microphone.return_value = fake_mic
+
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr}):
+        result = stt._record_phrase(timeout=5)
+    assert result == "hello jarvis"
+
+
+def test_stt_record_phrase_returns_none_on_exception(monkeypatch, capsys):
+    stt = STTEngine()
+    fake_sr = MagicMock()
+    fake_sr.Recognizer.return_value.listen.side_effect = RuntimeError("no mic")
+    fake_mic = MagicMock()
+    fake_mic.__enter__ = MagicMock(return_value=fake_mic)
+    fake_mic.__exit__ = MagicMock(return_value=False)
+    fake_sr.Microphone.return_value = fake_mic
+
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr}):
+        result = stt._record_phrase(timeout=5)
+    assert result is None
+    assert "STT error" in capsys.readouterr().out
+
+
 # ── WhisperSTT / _load_model ──────────────────────────────────────────────────
 
 def test_whisper_load_model_caches():

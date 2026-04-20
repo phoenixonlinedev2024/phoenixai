@@ -279,3 +279,90 @@ def test_rpc_message_can_set_error():
     msg = RPCMessage(error="something went wrong", is_response=True)
     assert msg.error == "something went wrong"
     assert msg.is_response is True
+
+
+# ── AgentRPC.process_messages ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_process_messages_returns_for_unknown_agent():
+    bus = AgentRPC()
+    # Should return immediately without looping
+    await bus.process_messages("nonexistent")
+
+
+@pytest.mark.asyncio
+async def test_process_messages_resolves_response_future():
+    bus = AgentRPC()
+    bus.register("agent1")
+    future: asyncio.Future = asyncio.get_event_loop().create_future()
+    response_msg = RPCMessage(id="abc123", method="", result="the answer", is_response=True)
+    bus._pending["abc123"] = future
+    await bus._queues["agent1"].put(response_msg)
+
+    task = asyncio.create_task(bus.process_messages("agent1"))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert future.done()
+    assert future.result() == "the answer"
+
+
+@pytest.mark.asyncio
+async def test_process_messages_sets_exception_on_error_response():
+    bus = AgentRPC()
+    bus.register("agent2")
+    future: asyncio.Future = asyncio.get_event_loop().create_future()
+    response_msg = RPCMessage(id="err001", method="", error="boom", is_response=True)
+    bus._pending["err001"] = future
+    await bus._queues["agent2"].put(response_msg)
+
+    task = asyncio.create_task(bus.process_messages("agent2"))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert future.done()
+    with pytest.raises(RuntimeError, match="boom"):
+        future.result()
+
+
+@pytest.mark.asyncio
+async def test_process_messages_calls_handler():
+    bus = AgentRPC()
+    bus.register("agent3")
+    called_with = {}
+
+    @bus.on("agent3", "greet")
+    async def greet(name):
+        called_with["name"] = name
+        return f"hello {name}"
+
+    msg = RPCMessage(method="greet", params={"name": "Tony"})
+    await bus._queues["agent3"].put(msg)
+
+    task = asyncio.create_task(bus.process_messages("agent3"))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert called_with.get("name") == "Tony"
+
+
+@pytest.mark.asyncio
+async def test_process_messages_handler_exception_is_captured():
+    bus = AgentRPC()
+    bus.register("agent4")
+
+    @bus.on("agent4", "broken")
+    async def broken():
+        raise ValueError("handler failed")
+
+    msg = RPCMessage(method="broken", params={})
+    await bus._queues["agent4"].put(msg)
+
+    task = asyncio.create_task(bus.process_messages("agent4"))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    # No exception propagated from process_messages
