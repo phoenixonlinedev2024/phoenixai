@@ -367,3 +367,139 @@ async def test_transcribe_once_runs_in_executor(monkeypatch):
     monkeypatch.setattr(w, "_record_and_transcribe", lambda t: "transcribed text")
     result = await w.transcribe_once(timeout=5)
     assert result == "transcribed text"
+
+
+# ── WhisperSTT._listen_loop ───────────────────────────────────────────────────
+
+def test_whisper_listen_loop_missing_deps(capsys):
+    from jarvis.voice.whisper_stt import WhisperSTT
+    w = WhisperSTT()
+    w._running = True
+    with patch.dict(sys.modules, {"speech_recognition": None}):
+        w._listen_loop(lambda t: None)
+    out = capsys.readouterr().out
+    assert "Missing dependency" in out or "not installed" in out.lower()
+
+
+def test_whisper_listen_loop_with_wake_word(monkeypatch):
+    from jarvis.voice.whisper_stt import WhisperSTT
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "WAKE_WORD", "jarvis")
+
+    w = WhisperSTT()
+    transcripts = []
+
+    fake_audio = MagicMock()
+    fake_audio.get_raw_data = MagicMock(return_value=b"\x00" * 200)
+
+    fake_sr = MagicMock()
+    recogniser = MagicMock()
+    recogniser.listen.return_value = fake_audio
+    fake_sr.Recognizer.return_value = recogniser
+
+    fake_mic = MagicMock()
+    fake_mic.__enter__ = MagicMock(return_value=fake_mic)
+    fake_mic.__exit__ = MagicMock(return_value=False)
+    fake_sr.Microphone.return_value = fake_mic
+
+    fake_np = MagicMock()
+    arr = MagicMock()
+    arr.astype.return_value = MagicMock()
+    fake_np.frombuffer.return_value = arr
+    fake_np.int16 = int
+    fake_np.float32 = float
+
+    fake_model = MagicMock()
+    # First call returns wake word + command, second call stops the loop
+    call_count = [0]
+
+    def fake_transcribe(audio, language="en", fp16=False):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return {"text": "jarvis open the pod bay doors"}
+        w._running = False
+        return {"text": ""}
+
+    fake_model.transcribe.side_effect = fake_transcribe
+
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr, "numpy": fake_np}):
+        with patch("jarvis.voice.whisper_stt._load_model", return_value=fake_model):
+            w._running = True
+            w._listen_loop(lambda t: transcripts.append(t))
+
+    assert len(transcripts) == 1
+    assert "open the pod bay doors" in transcripts[0]
+
+
+# ── TTSEngine piper path ──────────────────────────────────────────────────────
+
+def test_tts_speak_piper_path(monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", True)
+    monkeypatch.setattr(cfg, "PIPER_BINARY", "/usr/bin/piper")
+    monkeypatch.setattr(cfg, "PIPER_MODEL", "/models/en.onnx")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/piper" if name == "piper" else None)
+
+    engine = TTSEngine(engine="piper")
+    fake_play_wav = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+
+    with patch("subprocess.run", return_value=fake_proc):
+        with patch.object(engine, "_play_wav", fake_play_wav):
+            engine.speak("piper test")
+
+    fake_play_wav.assert_called_once()
+
+
+def test_tts_speak_piper_fallback_on_failure(monkeypatch, capsys):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", True)
+    monkeypatch.setattr(cfg, "PIPER_BINARY", "/usr/bin/piper")
+    monkeypatch.setattr(cfg, "PIPER_MODEL", "/models/en.onnx")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/piper" if name == "piper" else None)
+
+    engine = TTSEngine(engine="piper")
+    fake_pyttsx3 = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.returncode = 1
+    fake_proc.stderr = "piper error"
+
+    with patch("subprocess.run", return_value=fake_proc):
+        with patch.object(engine, "_speak_pyttsx3", fake_pyttsx3):
+            engine.speak("fallback test")
+
+    fake_pyttsx3.assert_called_once_with("fallback test")
+    out = capsys.readouterr().out
+    assert "Piper error" in out
+
+
+def test_tts_speak_piper_exception_fallback(monkeypatch, capsys):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", True)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/piper" if name == "piper" else None)
+
+    engine = TTSEngine(engine="piper")
+    fake_pyttsx3 = MagicMock()
+
+    with patch("subprocess.run", side_effect=RuntimeError("piper crashed")):
+        with patch.object(engine, "_speak_pyttsx3", fake_pyttsx3):
+            engine.speak("exception test")
+
+    fake_pyttsx3.assert_called_once_with("exception test")
+    out = capsys.readouterr().out
+    assert "Piper exception" in out
+
+
+def test_tts_get_pyttsx3_caches(monkeypatch):
+    from jarvis.config import cfg
+    fake_engine = MagicMock()
+    fake_engine.getProperty = MagicMock(return_value=[])
+    fake_pyttsx3 = MagicMock()
+    fake_pyttsx3.init = MagicMock(return_value=fake_engine)
+    engine = TTSEngine(engine="pyttsx3")
+    with patch.dict(sys.modules, {"pyttsx3": fake_pyttsx3}):
+        e1 = engine._get_pyttsx3()
+        e2 = engine._get_pyttsx3()
+    assert e1 is e2
+    fake_pyttsx3.init.assert_called_once()
