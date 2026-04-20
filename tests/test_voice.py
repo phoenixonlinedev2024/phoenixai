@@ -1,0 +1,272 @@
+"""Tests for jarvis.voice (TTS + STT engines)."""
+
+from __future__ import annotations
+
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+# ── Inject fakes ──────────────────────────────────────────────────────────────
+
+def _inject_fakes():
+    for name in ("anthropic", "openai", "chromadb", "sentence_transformers", "modal"):
+        sys.modules.setdefault(name, MagicMock())
+    sys.modules["anthropic"].AsyncAnthropic = MagicMock
+
+
+_inject_fakes()
+
+from jarvis.voice.speech_to_text import STTEngine  # noqa: E402
+from jarvis.voice.text_to_speech import TTSEngine  # noqa: E402
+from jarvis.voice.whisper_stt import WhisperSTT, _load_model, _MODEL_CACHE  # noqa: E402
+
+
+# ── TTSEngine ─────────────────────────────────────────────────────────────────
+
+def test_tts_init_uses_config_engine_by_default(monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "TTS_ENGINE", "pyttsx3")
+    engine = TTSEngine()
+    assert engine.engine_name == "pyttsx3"
+
+
+def test_tts_init_with_explicit_engine():
+    engine = TTSEngine(engine="elevenlabs")
+    assert engine.engine_name == "elevenlabs"
+
+
+def test_tts_speak_noop_when_voice_disabled(monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", False)
+    engine = TTSEngine(engine="pyttsx3")
+    # Should not raise even without pyttsx3
+    engine.speak("hello")
+
+
+def test_tts_speak_noop_on_empty_text(monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", True)
+    engine = TTSEngine(engine="pyttsx3")
+    engine.speak("")  # empty, ignored
+    engine.speak("   ")  # whitespace, ignored
+
+
+def test_tts_speak_pyttsx3_path(monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", True)
+
+    fake_engine = MagicMock()
+    fake_engine.getProperty = MagicMock(return_value=[])
+    fake_pyttsx3 = MagicMock()
+    fake_pyttsx3.init = MagicMock(return_value=fake_engine)
+
+    with patch.dict(sys.modules, {"pyttsx3": fake_pyttsx3}):
+        engine = TTSEngine(engine="pyttsx3")
+        engine.speak("hello")
+
+    fake_engine.say.assert_called_once_with("hello")
+    fake_engine.runAndWait.assert_called_once()
+
+
+def test_tts_pyttsx3_error_prints(monkeypatch, capsys):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", True)
+    fake_pyttsx3 = MagicMock()
+    fake_pyttsx3.init = MagicMock(side_effect=RuntimeError("no audio"))
+    with patch.dict(sys.modules, {"pyttsx3": fake_pyttsx3}):
+        engine = TTSEngine(engine="pyttsx3")
+        engine.speak("hello")
+    captured = capsys.readouterr()
+    assert "pyttsx3 error" in captured.out
+
+
+def test_tts_elevenlabs_fallback_on_error(monkeypatch, capsys):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", True)
+    monkeypatch.setattr(cfg, "ELEVENLABS_API_KEY", "k")
+
+    fake_eleven = MagicMock()
+    fake_eleven.ElevenLabs = MagicMock(side_effect=RuntimeError("api down"))
+    fake_eleven.play = MagicMock()
+
+    fake_pyttsx3 = MagicMock()
+    fake_engine = MagicMock()
+    fake_engine.getProperty = MagicMock(return_value=[])
+    fake_pyttsx3.init = MagicMock(return_value=fake_engine)
+
+    with patch.dict(sys.modules, {"elevenlabs": fake_eleven, "pyttsx3": fake_pyttsx3}):
+        engine = TTSEngine(engine="elevenlabs")
+        engine.speak("hello")
+
+    out = capsys.readouterr().out
+    assert "ElevenLabs error" in out
+    # Falls back to pyttsx3
+    fake_engine.say.assert_called_once()
+
+
+def test_tts_piper_available_checks_shutil(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/piper" if name == "piper" else None)
+    engine = TTSEngine(engine="piper")
+    assert engine._piper_available() is True
+
+
+def test_tts_piper_not_available(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "PIPER_BINARY", "/nonexistent/piper")
+    engine = TTSEngine(engine="piper")
+    assert engine._piper_available() is False
+
+
+def test_tts_set_voice_by_name_found():
+    voice = MagicMock(id="voice-id-1")
+    voice.name = "English (UK) Male"
+    fake_engine = MagicMock()
+    fake_engine.getProperty = MagicMock(return_value=[voice])
+    eng = TTSEngine(engine="pyttsx3")
+    eng._pyttsx3_engine = fake_engine
+    assert eng.set_voice_by_name("english") is True
+    fake_engine.setProperty.assert_called_with("voice", "voice-id-1")
+
+
+def test_tts_set_voice_by_name_not_found():
+    voice = MagicMock(id="v1")
+    voice.name = "French Female"
+    fake_engine = MagicMock()
+    fake_engine.getProperty = MagicMock(return_value=[voice])
+    eng = TTSEngine(engine="pyttsx3")
+    eng._pyttsx3_engine = fake_engine
+    assert eng.set_voice_by_name("german") is False
+
+
+def test_tts_list_voices():
+    v1 = MagicMock(); v1.name = "A"
+    v2 = MagicMock(); v2.name = "B"
+    fake_engine = MagicMock()
+    fake_engine.getProperty = MagicMock(return_value=[v1, v2])
+    eng = TTSEngine(engine="pyttsx3")
+    eng._pyttsx3_engine = fake_engine
+    assert eng.list_voices() == ["A", "B"]
+
+
+def test_tts_list_voices_error_returns_empty():
+    fake_engine = MagicMock()
+    fake_engine.getProperty = MagicMock(side_effect=RuntimeError("fail"))
+    eng = TTSEngine(engine="pyttsx3")
+    eng._pyttsx3_engine = fake_engine
+    assert eng.list_voices() == []
+
+
+@pytest.mark.asyncio
+async def test_tts_speak_async_runs_in_executor(monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", False)
+    eng = TTSEngine(engine="pyttsx3")
+    await eng.speak_async("hello")  # should not raise
+
+
+# ── STTEngine ─────────────────────────────────────────────────────────────────
+
+def test_stt_init_state():
+    stt = STTEngine()
+    assert stt._running is False
+    assert stt._thread is None
+
+
+def test_stt_start_listening_sets_running():
+    stt = STTEngine()
+
+    # Patch the internal _listen_loop so thread exits quickly
+    def fake_loop(callback):
+        pass
+    stt._listen_loop = fake_loop
+
+    stt.start_listening(lambda t: None)
+    assert stt._running is True
+    assert stt._thread is not None
+    stt.stop_listening()
+
+
+def test_stt_start_listening_idempotent():
+    stt = STTEngine()
+    stt._listen_loop = lambda cb: None
+    stt.start_listening(lambda t: None)
+    first_thread = stt._thread
+    stt.start_listening(lambda t: None)
+    # Second call should NOT create a new thread
+    assert stt._thread is first_thread
+    stt.stop_listening()
+
+
+def test_stt_stop_listening_sets_flag():
+    stt = STTEngine()
+    stt._listen_loop = lambda cb: None
+    stt.start_listening(lambda t: None)
+    stt.stop_listening()
+    assert stt._running is False
+
+
+def test_stt_listen_loop_missing_speech_recognition(capsys):
+    stt = STTEngine()
+    stt._running = True
+    with patch.dict(sys.modules, {"speech_recognition": None}):
+        stt._listen_loop(lambda t: None)
+    captured = capsys.readouterr()
+    assert "not installed" in captured.out.lower()
+
+
+# ── WhisperSTT / _load_model ──────────────────────────────────────────────────
+
+def test_whisper_load_model_caches():
+    _MODEL_CACHE.clear()
+    fake_whisper = MagicMock()
+    fake_whisper.load_model = MagicMock(return_value="MODEL_OBJ")
+
+    with patch.dict(sys.modules, {"whisper": fake_whisper}):
+        m1 = _load_model("base")
+        m2 = _load_model("base")
+
+    assert m1 == "MODEL_OBJ"
+    assert m1 is m2
+    # Only loaded once
+    fake_whisper.load_model.assert_called_once_with("base")
+    _MODEL_CACHE.clear()
+
+
+def test_whisper_load_model_missing_whisper():
+    _MODEL_CACHE.clear()
+    with patch.dict(sys.modules, {"whisper": None}):
+        with pytest.raises(RuntimeError) as exc:
+            _load_model("tiny")
+    assert "openai-whisper" in str(exc.value)
+
+
+def test_whisper_stt_init_defaults():
+    w = WhisperSTT()
+    assert w.model_size == "base"
+    assert w._running is False
+
+
+def test_whisper_stt_init_custom_model():
+    w = WhisperSTT(model_size="small")
+    assert w.model_size == "small"
+
+
+def test_whisper_start_listening_is_idempotent():
+    w = WhisperSTT()
+    w._listen_loop = lambda cb: None
+    w.start_listening(lambda t: None)
+    first_thread = w._thread
+    w.start_listening(lambda t: None)
+    assert w._thread is first_thread
+    w.stop_listening()
+
+
+def test_whisper_stop_listening_sets_flag():
+    w = WhisperSTT()
+    w._listen_loop = lambda cb: None
+    w.start_listening(lambda t: None)
+    w.stop_listening()
+    assert w._running is False
