@@ -175,8 +175,8 @@ async def test_create_message_with_explicit_provider(router):
 
 
 def test_unknown_provider_raises(router):
+    import asyncio
     with pytest.raises(ValueError, match="Unknown provider"):
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             router._call("bogus_provider", [], "", None, 256)
         )
