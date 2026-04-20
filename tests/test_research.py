@@ -144,6 +144,39 @@ def test_collector_stats(collector):
     assert 0.0 <= stats["avg_reward"] <= 1.0
 
 
+def test_collector_record_turn_unknown_session_is_noop(collector):
+    collector.record_turn("nonexistent", "user", "content")
+    # no active trajectory for "nonexistent" — should not raise
+
+
+def test_collector_stats_avg_turns(collector):
+    collector.start("s1")
+    collector.record_turn("s1", "user", "a")
+    collector.record_turn("s1", "assistant", "b")
+    collector.complete("s1", outcome="success")
+    stats = collector.stats()
+    assert stats["avg_turns"] == 2.0
+
+
+def test_collector_stats_empty(collector):
+    stats = collector.stats()
+    assert stats["total"] == 0
+    assert stats["avg_reward"] == 0.0
+    assert stats["avg_turns"] == 0.0
+
+
+def test_load_all_skips_corrupt_file(collector, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    # Create a corrupt JSON file in the trajectories directory
+    coll = TrajectoryCollector()
+    traj_dir = coll._dir
+    traj_dir.mkdir(parents=True, exist_ok=True)
+    (traj_dir / "corrupt.json").write_text("{not valid json{{")
+    loaded = coll.load_all()
+    assert loaded == []  # corrupt file is silently skipped
+
+
 # ── to_sharegpt ───────────────────────────────────────────────────────────────
 
 def test_to_sharegpt_basic():
