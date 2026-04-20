@@ -180,3 +180,109 @@ def test_unknown_provider_raises(router):
         asyncio.run(
             router._call("bogus_provider", [], "", None, 256)
         )
+
+
+# ── Additional provider paths ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_call_openrouter_no_client_raises(monkeypatch):
+    monkeypatch.setattr("jarvis.providers.router.cfg.MAX_TOKENS", 256)
+    monkeypatch.setattr("jarvis.providers.router.cfg.PROVIDER_ORDER", ["openrouter"])
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENROUTER_API_KEY", "")
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENROUTER_MODEL", "")
+    router = ProviderRouter()
+    router._clients["openrouter"] = None  # simulates _openrouter() returning None
+    with pytest.raises(RuntimeError, match="OpenRouter not configured"):
+        await router._call("openrouter", [], "", None, 256)
+
+
+@pytest.mark.asyncio
+async def test_call_openrouter_success(monkeypatch):
+    monkeypatch.setattr("jarvis.providers.router.cfg.MAX_TOKENS", 256)
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENROUTER_MODEL", "llama3")
+    monkeypatch.setattr("jarvis.providers.router.cfg.PROVIDER_ORDER", ["openrouter"])
+    router = ProviderRouter()
+
+    good_completion = MagicMock()
+    good_completion.choices[0].message.content = "openrouter reply"
+    mock_or = MagicMock()
+    mock_or.chat.completions.create = AsyncMock(return_value=good_completion)
+    router._clients["openrouter"] = mock_or
+
+    resp = await router._call("openrouter", [{"role": "user", "content": "hi"}], "sys", None, 256)
+    assert resp.content[0].text == "openrouter reply"
+
+
+@pytest.mark.asyncio
+async def test_call_openai_compat_no_client_raises(monkeypatch):
+    monkeypatch.setattr("jarvis.providers.router.cfg.MAX_TOKENS", 256)
+    router = ProviderRouter()
+    router._clients["openai_compat"] = None
+    with pytest.raises(RuntimeError, match="OpenAI-compat endpoint not configured"):
+        await router._call("openai_compat", [], "", None, 256)
+
+
+@pytest.mark.asyncio
+async def test_call_openai_compat_success(monkeypatch):
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENAI_COMPAT_MODEL", "gpt-neo")
+    router = ProviderRouter()
+
+    good_completion = MagicMock()
+    good_completion.choices[0].message.content = "compat reply"
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=good_completion)
+    router._clients["openai_compat"] = mock_client
+
+    resp = await router._call("openai_compat", [{"role": "user", "content": "hey"}], "s", None, 256)
+    assert resp.content[0].text == "compat reply"
+
+
+@pytest.mark.asyncio
+async def test_call_ollama_no_client_raises(monkeypatch):
+    router = ProviderRouter()
+    router._clients["ollama"] = None
+    with pytest.raises(RuntimeError, match="Ollama not available"):
+        await router._call("ollama", [], "", None, 256)
+
+
+@pytest.mark.asyncio
+async def test_call_ollama_success(monkeypatch):
+    monkeypatch.setattr("jarvis.providers.router.cfg.OLLAMA_MODEL", "mistral")
+    router = ProviderRouter()
+
+    mock_ollama = MagicMock()
+    mock_ollama.chat = AsyncMock(return_value={"message": {"content": "ollama says hi"}})
+    router._clients["ollama"] = mock_ollama
+
+    resp = await router._call("ollama", [{"role": "user", "content": "yo"}], "", None, 256)
+    assert resp.content[0].text == "ollama says hi"
+
+
+def test_openai_compat_returns_none_when_no_url(monkeypatch):
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENAI_COMPAT_BASE_URL", "")
+    router = ProviderRouter()
+    assert router._openai_compat() is None
+
+
+def test_anthropic_client_reused():
+    router = ProviderRouter()
+    c1 = router._anthropic()
+    c2 = router._anthropic()
+    assert c1 is c2
+
+
+@pytest.mark.asyncio
+async def test_create_message_with_tools(router):
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text="used tools")]
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=mock_resp)
+    router._clients["anthropic"] = mock_client
+
+    resp = await router.create_message(
+        [{"role": "user", "content": "search web"}],
+        tools=[{"name": "web_search", "description": "Search", "input_schema": {}}],
+    )
+    kwargs = mock_client.messages.create.call_args[1]
+    assert "tools" in kwargs
+    assert resp.content[0].text == "used tools"
