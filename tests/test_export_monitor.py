@@ -158,3 +158,111 @@ def test_monitor_hash_is_deterministic():
 
 def test_monitor_hash_differs_for_different_content():
     assert ProactiveMonitor._hash("a") != ProactiveMonitor._hash("b")
+
+
+# ── _fetch_url ────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_fetch_url_returns_text(monkeypatch):
+    fake_resp = MagicMock()
+    fake_resp.__aenter__ = AsyncMock(return_value=fake_resp)
+    fake_resp.__aexit__ = AsyncMock(return_value=False)
+    fake_resp.text = AsyncMock(return_value="page content")
+
+    fake_session = MagicMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+    fake_session.get = MagicMock(return_value=fake_resp)
+
+    fake_aiohttp = MagicMock()
+    fake_aiohttp.ClientSession = MagicMock(return_value=fake_session)
+    fake_aiohttp.ClientTimeout = MagicMock(return_value=MagicMock())
+
+    jarvis = _make_jarvis_mock()
+    mon = ProactiveMonitor(jarvis)
+
+    with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
+        result = await mon._fetch_url("https://example.com")
+    assert result == "page content"
+
+
+# ── _trigger_action ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_trigger_action_calls_chat():
+    jarvis = _make_jarvis_mock()
+    jarvis.chat = AsyncMock(return_value="action taken")
+    mon = ProactiveMonitor(jarvis)
+    await mon._trigger_action("my_monitor", "alert me", "https://example.com")
+    jarvis.chat.assert_called_once()
+    call_args = jarvis.chat.call_args[0][0]
+    assert "my_monitor" in call_args
+    assert "alert me" in call_args
+
+
+# ── _check_target URL type ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_check_target_url_no_change(monkeypatch):
+    jarvis = _make_jarvis_mock()
+    content_hash = ProactiveMonitor._hash("page content")
+    jarvis.memory.get_monitor_targets = MagicMock(return_value=[{
+        "name": "web_mon",
+        "target_type": "url",
+        "target": "https://example.com",
+        "action": "report",
+        "last_hash": content_hash,
+    }])
+
+    mon = ProactiveMonitor(jarvis)
+    monkeypatch.setattr(mon, "_fetch_url", AsyncMock(return_value="page content"))
+    await mon._check_all()
+    # No change → no action triggered
+    jarvis.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_target_url_change_triggers_action(monkeypatch):
+    jarvis = _make_jarvis_mock()
+    jarvis.memory.get_monitor_targets = MagicMock(return_value=[{
+        "name": "web_mon",
+        "target_type": "url",
+        "target": "https://example.com",
+        "action": "summarise changes",
+        "last_hash": ProactiveMonitor._hash("old content"),
+    }])
+
+    mon = ProactiveMonitor(jarvis)
+    monkeypatch.setattr(mon, "_fetch_url", AsyncMock(return_value="new content"))
+    await mon._check_all()
+    jarvis.chat.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_check_target_unknown_type_skips():
+    jarvis = _make_jarvis_mock()
+    jarvis.memory.get_monitor_targets = MagicMock(return_value=[{
+        "name": "weird",
+        "target_type": "database",
+        "target": "postgres://localhost",
+        "action": "alert",
+        "last_hash": None,
+    }])
+    mon = ProactiveMonitor(jarvis)
+    await mon._check_all()
+    jarvis.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_target_exception_does_not_crash(monkeypatch):
+    jarvis = _make_jarvis_mock()
+    jarvis.memory.get_monitor_targets = MagicMock(return_value=[{
+        "name": "flaky",
+        "target_type": "url",
+        "target": "https://broken.example",
+        "action": "alert",
+        "last_hash": None,
+    }])
+    mon = ProactiveMonitor(jarvis)
+    monkeypatch.setattr(mon, "_fetch_url", AsyncMock(side_effect=ConnectionError("refused")))
+    await mon._check_all()  # must not raise

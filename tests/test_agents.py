@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -226,3 +226,56 @@ async def test_subagent_pool_respects_semaphore():
     tasks = [SubagentTask(goal=f"t{i}") for i in range(4)]
     results = await pool.dispatch(tasks)
     assert len(results) == 4
+
+
+# ── AgentRPC.notify ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_notify_puts_message_to_queue():
+    bus = AgentRPC()
+    bus.register("listener")
+
+    bus.notify("listener", "event", data="hello")
+    # Give the created task a tick to execute
+    await asyncio.sleep(0)
+
+    assert not bus._queues["listener"].empty()
+    msg = await bus._queues["listener"].get()
+    assert msg.method == "event"
+    assert msg.params["data"] == "hello"
+
+
+def test_notify_silently_ignores_unknown_agent():
+    bus = AgentRPC()
+    # Should not raise even if agent is not registered
+    bus.notify("ghost_agent", "method", x=1)
+
+
+@pytest.mark.asyncio
+async def test_call_timeout_raises():
+    bus = AgentRPC()
+    bus.register("slow-agent")
+
+    # Don't put any message handler — future will never resolve
+    import asyncio as _asyncio
+    original_wait_for = _asyncio.wait_for
+
+    async def fast_timeout(coro, timeout):
+        raise _asyncio.TimeoutError()
+
+    with patch("jarvis.agents.rpc.asyncio.wait_for", fast_timeout):
+        with pytest.raises(TimeoutError, match="timed out"):
+            await bus.call("slow-agent", "neverreplies")
+
+
+# ── RPCMessage is_response field ─────────────────────────────────────────────
+
+def test_rpc_message_is_response_default_false():
+    msg = RPCMessage()
+    assert msg.is_response is False
+
+
+def test_rpc_message_can_set_error():
+    msg = RPCMessage(error="something went wrong", is_response=True)
+    assert msg.error == "something went wrong"
+    assert msg.is_response is True
