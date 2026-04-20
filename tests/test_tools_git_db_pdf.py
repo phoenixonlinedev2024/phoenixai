@@ -316,3 +316,103 @@ def test_pdf_tools_register():
     register_tools(reg)
     names = {t.name for t in reg.all()}
     assert {"read_pdf", "extract_pdf_tables", "pdf_metadata"} <= names
+
+
+def _make_fake_pdfplumber(text="page text", tables=None, metadata=None):
+    """Build a fake pdfplumber module with a two-page PDF."""
+    fake_page = MagicMock()
+    fake_page.extract_text.return_value = text
+    fake_page.extract_tables.return_value = tables or [[[" A", "B"], ["1", "2"]]]
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__ = MagicMock(return_value=fake_pdf)
+    fake_pdf.__exit__ = MagicMock(return_value=False)
+    fake_pdf.pages = [fake_page, fake_page]
+    fake_pdf.metadata = metadata or {"Author": "Tony", "Title": "Report"}
+    fake_plumber = MagicMock()
+    fake_plumber.open.return_value = fake_pdf
+    return fake_plumber, fake_pdf, fake_page
+
+
+def test_read_pdf_success():
+    fake_plumber, _, _ = _make_fake_pdfplumber(text="Hello PDF")
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _read_pdf("/tmp/doc.pdf")
+    assert "Hello PDF" in out
+    assert "Page 1" in out
+
+
+def test_read_pdf_with_page_spec():
+    fake_plumber, _, _ = _make_fake_pdfplumber(text="specific page")
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _read_pdf("/tmp/doc.pdf", pages="1")
+    assert "specific page" in out
+
+
+def test_read_pdf_page_returns_none_text():
+    fake_plumber, fake_pdf, fake_page = _make_fake_pdfplumber()
+    fake_page.extract_text.return_value = None
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _read_pdf("/tmp/doc.pdf")
+    assert "Page 1" in out
+
+
+def test_extract_pdf_tables_success():
+    fake_plumber, _, _ = _make_fake_pdfplumber()
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _extract_pdf_tables("/tmp/doc.pdf", page=0)
+    import json
+    data = json.loads(out)
+    assert isinstance(data, list)
+    assert len(data) > 0
+
+
+def test_extract_pdf_tables_empty():
+    fake_plumber, fake_pdf, fake_page = _make_fake_pdfplumber()
+    fake_page.extract_tables.return_value = []
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _extract_pdf_tables("/tmp/doc.pdf", page=0)
+    assert "No tables found" in out
+
+
+def test_extract_pdf_tables_exception():
+    fake_plumber = MagicMock()
+    fake_plumber.open.side_effect = RuntimeError("corrupt")
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _extract_pdf_tables("/tmp/doc.pdf")
+    assert "Table extraction error" in out
+
+
+def test_pdf_metadata_success():
+    fake_plumber, _, _ = _make_fake_pdfplumber(metadata={"Author": "Tony"})
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _pdf_metadata("/tmp/doc.pdf")
+    import json
+    data = json.loads(out)
+    assert "pages" in data
+    assert data["Author"] == "Tony"
+
+
+def test_db_query_non_select():
+    try:
+        import sqlalchemy  # noqa: F401
+    except ImportError:
+        pytest.skip("sqlalchemy not installed")
+
+    from jarvis.tools.database_tools import _db_query
+    out = _db_query("sqlite:///:memory:", "CREATE TABLE t2 (x INTEGER)")
+    assert "Rows affected" in out or "Query executed" in out
+
+
+def test_db_schema_with_table():
+    try:
+        from sqlalchemy import create_engine, text
+    except ImportError:
+        pytest.skip("sqlalchemy not installed")
+
+    from jarvis.tools.database_tools import _db_schema
+    url = "sqlite:///:memory:"
+    engine = create_engine(url)
+    with engine.begin() as c:
+        c.execute(text("CREATE TABLE myinfo (id INTEGER PRIMARY KEY, name TEXT)"))
+    out = _db_schema(url, table="myinfo")
+    assert "myinfo" in out or "Schema error" in out

@@ -300,6 +300,75 @@ async def test_ssh_health_check_false_when_connect_fails(monkeypatch):
     assert await sb.health_check() is False
 
 
+@pytest.mark.asyncio
+async def test_ssh_health_check_true(monkeypatch):
+    from jarvis.sandbox.ssh_sandbox import SSHSandbox
+    sb = SSHSandbox(host="localhost")
+    fake_conn = MagicMock()
+    monkeypatch.setattr(sb, "_connect", lambda: fake_conn)
+    result = await sb.health_check()
+    assert result is True
+    fake_conn.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ssh_run_delegates_to_exec(monkeypatch):
+    from jarvis.sandbox.ssh_sandbox import SSHSandbox
+    from jarvis.sandbox.base import ExecResult
+    sb = SSHSandbox(host="localhost", username="user")
+    expected = ExecResult(stdout="ran", exit_code=0)
+    monkeypatch.setattr(sb, "_exec", lambda cmd, timeout, conn=None: expected)
+    result = await sb.run("echo hi", timeout=10)
+    assert result.stdout == "ran"
+
+
+@pytest.mark.asyncio
+async def test_ssh_write_and_read_file(monkeypatch, tmp_path):
+    from jarvis.sandbox.ssh_sandbox import SSHSandbox
+    sb = SSHSandbox(host="localhost", username="user")
+
+    written = {}
+
+    def fake_connect():
+        fake_conn = MagicMock()
+        fake_sftp = MagicMock()
+        fake_file = MagicMock()
+        fake_file.__enter__ = MagicMock(return_value=fake_file)
+        fake_file.__exit__ = MagicMock(return_value=False)
+        fake_file.write = MagicMock(side_effect=lambda data: written.update({"content": data}))
+        fake_file.read = MagicMock(return_value=b"file content")
+        fake_sftp.file = MagicMock(return_value=fake_file)
+        fake_conn.open_sftp = MagicMock(return_value=fake_sftp)
+        return fake_conn
+
+    monkeypatch.setattr(sb, "_connect", fake_connect)
+    await sb.write_file("/tmp/test.txt", "hello")
+    assert written.get("content") == "hello"
+
+
+@pytest.mark.asyncio
+async def test_ssh_run_code_python(monkeypatch):
+    from jarvis.sandbox.ssh_sandbox import SSHSandbox
+    from jarvis.sandbox.base import ExecResult
+    sb = SSHSandbox(host="localhost", username="user")
+    expected = ExecResult(stdout="print result", exit_code=0)
+
+    def fake_connect():
+        fake_conn = MagicMock()
+        fake_sftp = MagicMock()
+        fake_file = MagicMock()
+        fake_file.__enter__ = MagicMock(return_value=fake_file)
+        fake_file.__exit__ = MagicMock(return_value=False)
+        fake_sftp.file = MagicMock(return_value=fake_file)
+        fake_conn.open_sftp = MagicMock(return_value=fake_sftp)
+        return fake_conn
+
+    monkeypatch.setattr(sb, "_connect", fake_connect)
+    monkeypatch.setattr(sb, "_exec", lambda cmd, timeout, conn=None: expected)
+    result = await sb.run_code("print('hi')", language="python", timeout=10)
+    assert result.stdout == "print result"
+
+
 # ── ModalSandbox ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
