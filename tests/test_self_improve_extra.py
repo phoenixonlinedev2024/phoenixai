@@ -272,3 +272,60 @@ def test_self_improve_engine_components():
     engine = SelfImproveEngine(jarvis)
     assert isinstance(engine.benchmarks, BenchmarkRunner)
     assert isinstance(engine.evolver, CapabilityEvolver)
+
+
+@pytest.mark.asyncio
+async def test_start_background_runs_one_cycle_then_sleeps(monkeypatch):
+    """start_background loops forever; we cancel after first cycle."""
+    import asyncio
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "SELF_IMPROVE_INTERVAL_HOURS", 0.0)
+
+    jarvis = _make_jarvis_mock(chat_reply="ok", gaps=[], tools=[])
+    engine = SelfImproveEngine(jarvis)
+
+    cycle_calls = []
+
+    async def fake_run_cycle():
+        cycle_calls.append(1)
+        return {"benchmark": {}, "gaps_filled": [], "capability": {}, "timestamp": ""}
+
+    monkeypatch.setattr(engine, "run_cycle", fake_run_cycle)
+
+    # Cancel after a tiny sleep to let one iteration run
+    async def cancel_soon(task):
+        await asyncio.sleep(0.01)
+        task.cancel()
+
+    task = asyncio.create_task(engine.start_background(interval_hours=0.0))
+    await asyncio.gather(cancel_soon(task), task, return_exceptions=True)
+
+    assert len(cycle_calls) >= 1
+
+
+@pytest.mark.asyncio
+async def test_start_background_handles_cycle_exception(monkeypatch, capsys):
+    """Cycle exceptions should be caught and logged, not propagate."""
+    import asyncio
+    from jarvis.config import cfg
+
+    jarvis = _make_jarvis_mock()
+    engine = SelfImproveEngine(jarvis)
+
+    call_count = [0]
+
+    async def flaky_cycle():
+        call_count[0] += 1
+        raise RuntimeError("cycle failed")
+
+    monkeypatch.setattr(engine, "run_cycle", flaky_cycle)
+
+    async def cancel_soon(task):
+        await asyncio.sleep(0.02)
+        task.cancel()
+
+    task = asyncio.create_task(engine.start_background(interval_hours=0.0))
+    await asyncio.gather(cancel_soon(task), task, return_exceptions=True)
+
+    assert call_count[0] >= 1
+    assert "Cycle error" in capsys.readouterr().out

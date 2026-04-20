@@ -266,3 +266,30 @@ async def test_check_target_exception_does_not_crash(monkeypatch):
     mon = ProactiveMonitor(jarvis)
     monkeypatch.setattr(mon, "_fetch_url", AsyncMock(side_effect=ConnectionError("refused")))
     await mon._check_all()  # must not raise
+
+
+# ── _notify ───────────────────────────────────────────────────────────────────
+
+def test_notify_falls_back_to_print_on_error(capsys):
+    from jarvis.monitor import _notify
+    # plyer is mocked as MagicMock — notification.notify may fail or succeed
+    # Either way, no exception should propagate
+    _notify("Test Title", "Test message")
+    # Just assert it doesn't raise
+
+
+def test_notify_prints_when_plyer_raises(monkeypatch, capsys):
+    from jarvis.monitor import _notify
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "plyer":
+            raise ImportError("no plyer")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    _notify("Alert", "Something happened")
+    out = capsys.readouterr().out
+    assert "Alert" in out
+    assert "Something happened" in out

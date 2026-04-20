@@ -270,3 +270,58 @@ def test_whisper_stop_listening_sets_flag():
     w.start_listening(lambda t: None)
     w.stop_listening()
     assert w._running is False
+
+
+# ── WhisperSTT._record_and_transcribe ────────────────────────────────────────
+
+def test_record_and_transcribe_returns_text(monkeypatch):
+    from jarvis.voice.whisper_stt import WhisperSTT
+
+    # Fake speech_recognition + numpy
+    fake_audio = MagicMock()
+    fake_audio.get_raw_data = MagicMock(return_value=b"\x00" * 100)
+
+    fake_sr = MagicMock()
+    fake_sr.Recognizer.return_value.listen.return_value = fake_audio
+
+    fake_np = MagicMock()
+    fake_np.frombuffer = MagicMock(return_value=MagicMock())
+    fake_np.int16 = int
+    fake_arr = MagicMock()
+    fake_arr.astype.return_value = MagicMock()
+    fake_np.frombuffer.return_value = fake_arr
+
+    fake_model = MagicMock()
+    fake_model.transcribe.return_value = {"text": " hello world "}
+
+    import sys
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr, "numpy": fake_np}):
+        with patch("jarvis.voice.whisper_stt._load_model", return_value=fake_model):
+            w = WhisperSTT()
+            result = w._record_and_transcribe(timeout=5)
+    assert result == "hello world"
+
+
+def test_record_and_transcribe_returns_none_on_exception(monkeypatch, capsys):
+    from jarvis.voice.whisper_stt import WhisperSTT
+
+    import sys
+    fake_sr = MagicMock()
+    fake_sr.Recognizer.return_value.listen.side_effect = RuntimeError("no mic")
+    fake_np = MagicMock()
+
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr, "numpy": fake_np}):
+        with patch("jarvis.voice.whisper_stt._load_model", return_value=MagicMock()):
+            w = WhisperSTT()
+            result = w._record_and_transcribe(timeout=5)
+    assert result is None
+    assert "Transcribe error" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_transcribe_once_runs_in_executor(monkeypatch):
+    from jarvis.voice.whisper_stt import WhisperSTT
+    w = WhisperSTT()
+    monkeypatch.setattr(w, "_record_and_transcribe", lambda t: "transcribed text")
+    result = await w.transcribe_once(timeout=5)
+    assert result == "transcribed text"
