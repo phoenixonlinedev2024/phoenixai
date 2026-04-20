@@ -1,7 +1,7 @@
 """Tests for jarvis.memory.store — SQLite-backed long-term memory."""
 
-import pytest
-from pathlib import Path
+import pytest  # noqa: F401
+from pathlib import Path  # noqa: F401
 
 
 def test_store_and_retrieve_fact(memory_store):
@@ -74,3 +74,120 @@ def test_monitor_target_crud(memory_store):
     memory_store.add_monitor_target("test_url", "url", "https://example.com", "alert me")
     targets = memory_store.get_monitor_targets()
     assert any(t["name"] == "test_url" for t in targets)
+
+
+# ── Additional coverage ──────────────────────────────────────────────────────
+
+def test_recall_fact_roundtrip_string(memory_store):
+    memory_store.store_fact("city", "Paris")
+    assert memory_store.recall_fact("city") == "Paris"
+
+
+def test_recall_fact_deserialises_json(memory_store):
+    memory_store.store_fact("settings", {"theme": "dark", "compact": True})
+    assert memory_store.recall_fact("settings") == {"theme": "dark", "compact": True}
+
+
+def test_recall_fact_missing_returns_none(memory_store):
+    assert memory_store.recall_fact("nope") is None
+
+
+def test_search_facts_by_key_or_value(memory_store):
+    memory_store.store_fact("favourite_colour", "azure")
+    memory_store.store_fact("mood", "azure-adjacent")
+    memory_store.store_fact("unrelated", "rose")
+    hits = memory_store.search_facts("azure")
+    keys = [h["key"] for h in hits]
+    assert "favourite_colour" in keys
+    assert "mood" in keys
+    assert "unrelated" not in keys
+
+
+def test_search_facts_respects_limit(memory_store):
+    for i in range(30):
+        memory_store.store_fact(f"k_{i}", "match-me")
+    hits = memory_store.search_facts("match-me")
+    assert len(hits) <= 20
+
+
+def test_update_scheduled_task_run(memory_store):
+    memory_store.add_scheduled_task("nightly", "0 0 * * *", "do stuff")
+    memory_store.update_task_run("nightly", "2024-01-01T00:00:00", "2024-01-02T00:00:00")
+    tasks = memory_store.get_scheduled_tasks()
+    match = next(t for t in tasks if t["name"] == "nightly")
+    assert match["last_run"] == "2024-01-01T00:00:00"
+    assert match["next_run"] == "2024-01-02T00:00:00"
+
+
+def test_ab_result_records_and_retrieves_winner(memory_store):
+    memory_store.record_ab_result(
+        task_hash="h1", variant_a="A", variant_b="B",
+        winner="A", score_a=0.9, score_b=0.5,
+    )
+    assert memory_store.get_ab_winner("h1") == "A"
+
+
+def test_ab_winner_latest_wins(memory_store):
+    memory_store.record_ab_result("h2", "A", "B", "A", 0.9, 0.5)
+    memory_store.record_ab_result("h2", "A", "B", "B", 0.4, 0.8)
+    assert memory_store.get_ab_winner("h2") == "B"
+
+
+def test_ab_winner_unknown_task_returns_none(memory_store):
+    assert memory_store.get_ab_winner("never-run") is None
+
+
+def test_update_monitor_hash(memory_store):
+    memory_store.add_monitor_target("docs", "file", "/tmp/x.md", "summarise")
+    memory_store.update_monitor_hash("docs", "abc123")
+    targets = memory_store.get_monitor_targets()
+    match = next(t for t in targets if t["name"] == "docs")
+    assert match["last_hash"] == "abc123"
+
+
+def test_summary_reflects_counts(memory_store):
+    memory_store.store_fact("a", "1")
+    memory_store.store_fact("b", "2")
+    memory_store.store_lesson("learn this")
+    s = memory_store.summary()
+    assert "2 facts" in s
+    assert "1 lessons" in s
+
+
+def test_lessons_ordered_newest_first(memory_store):
+    memory_store.store_lesson("first")
+    memory_store.store_lesson("second")
+    memory_store.store_lesson("third")
+    out = memory_store.get_lessons(limit=10)
+    assert out[0] == "third"
+    assert out[-1] == "first"
+
+
+def test_get_history_chronological_order(memory_store):
+    sid = "chrono"
+    memory_store.save_message(sid, "user", "one")
+    memory_store.save_message(sid, "assistant", "two")
+    memory_store.save_message(sid, "user", "three")
+    hist = memory_store.get_history(sid, limit=10)
+    assert [m["content"] for m in hist] == ["one", "two", "three"]
+
+
+def test_skill_usage_increments_and_averages(memory_store):
+    memory_store.record_skill_use("s1", "desc", success=True)
+    memory_store.record_skill_use("s1", "desc", success=False)
+    memory_store.record_skill_use("s1", "desc", success=True)
+    with memory_store._conn() as conn:
+        row = conn.execute(
+            "SELECT usage_count, success_rate FROM skills WHERE name=?", ("s1",)
+        ).fetchone()
+    assert row["usage_count"] == 3
+    assert 0 < row["success_rate"] <= 1
+
+
+def test_corrupt_db_path_auto_creates_parent(tmp_path):
+    from jarvis.memory.store import MemoryStore
+    nested = tmp_path / "deep" / "down" / "m.db"
+    ms = MemoryStore(db_path=nested)
+    ms.store_fact("x", "y")
+    assert nested.exists()
+    assert ms.recall_fact("x") == "y"
