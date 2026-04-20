@@ -137,3 +137,78 @@ def test_message_to_dict():
     assert d["sender"] == "agent-1"
     assert "timestamp" in d
     assert "id" in d
+
+
+# ── Additional coverage ───────────────────────────────────────────────────────
+
+def test_message_unique_ids():
+    ids = {ACPMessage().id for _ in range(20)}
+    assert len(ids) == 20
+
+
+@pytest.mark.asyncio
+async def test_history_trims_to_max(bus):
+    # Fill past the 500-message limit
+    bus._max_history = 10
+    for i in range(15):
+        await bus.publish("trim", payload=i)
+    assert len(bus._history) == 10
+    # Most recent messages should be retained
+    payloads = [m.payload for m in bus._history]
+    assert 14 in payloads
+    assert 0 not in payloads
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_does_not_crash_bus(bus):
+    async def bad_handler(msg):
+        raise RuntimeError("handler exploded")
+
+    received = []
+
+    async def good_handler(msg):
+        received.append(msg)
+
+    bus.subscribe("err_topic", bad_handler)
+    bus.subscribe("err_topic", good_handler)
+    # publish uses return_exceptions=True so should not raise
+    await bus.publish("err_topic", payload="test")
+    assert len(received) == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_custom_sender(bus):
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    bus.subscribe("s", handler)
+    await bus.publish("s", payload="x", sender="agent-007")
+    assert received[0].sender == "agent-007"
+
+
+def test_topics_lists_registered(bus):
+    async def noop(msg): pass
+    bus.subscribe("alpha", noop)
+    bus.subscribe("beta", noop)
+    assert "alpha" in bus.topics()
+    assert "beta" in bus.topics()
+
+
+@pytest.mark.asyncio
+async def test_publish_sync_enqueues_in_running_loop(bus):
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    bus.subscribe("sync_topic", handler)
+
+    async def _drive():
+        bus.publish_sync("sync_topic", payload="fire")
+        await asyncio.sleep(0.05)  # let the created task execute
+
+    await _drive()
+    assert len(received) == 1
+    assert received[0].payload == "fire"

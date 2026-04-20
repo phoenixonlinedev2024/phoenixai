@@ -82,3 +82,96 @@ def test_log_snapshot_creates_file(reg, tmp_path, monkeypatch):
     import json
     data = json.loads(log_file.read_text().strip())
     assert data["counters"]["logged"] == 1
+
+
+# ── Additional edge-case coverage ────────────────────────────────────────────
+
+def test_histogram_p99(reg):
+    for i in range(100):
+        reg.observe("resp2", float(i))
+    assert reg.histogram("resp2").p99 >= 95.0
+
+
+def test_histogram_p95_empty():
+    from jarvis.observability import Histogram
+    h = Histogram(name="empty")
+    assert h.p95 == 0.0
+
+
+def test_histogram_p99_empty():
+    from jarvis.observability import Histogram
+    h = Histogram(name="empty")
+    assert h.p99 == 0.0
+
+
+def test_histogram_avg_empty():
+    from jarvis.observability import Histogram
+    h = Histogram(name="empty")
+    assert h.avg == 0.0
+
+
+def test_histogram_total_and_count():
+    from jarvis.observability import Histogram
+    h = Histogram(name="t")
+    h.observe(1.0)
+    h.observe(2.0)
+    h.observe(3.0)
+    assert h.total == 6.0
+    assert h.count == 3
+
+
+def test_histogram_trims_to_max_size():
+    from jarvis.observability import Histogram
+    h = Histogram(name="big", _max_size=10)
+    for i in range(20):
+        h.observe(float(i))
+    assert h.count == 10
+    # Should keep the newest 10
+    assert h.observations[0] == 10.0
+
+
+def test_counter_auto_creates_on_first_access(reg):
+    # Access without calling inc first
+    c1 = reg.counter("new_one")
+    c2 = reg.counter("new_one")
+    assert c1 is c2
+    assert c1.value == 0
+
+
+def test_histogram_auto_creates_on_first_access(reg):
+    h1 = reg.histogram("lat")
+    h2 = reg.histogram("lat")
+    assert h1 is h2
+
+
+def test_prometheus_sanitises_dots_and_dashes(reg):
+    reg.inc("tool.calls-made")
+    text = reg.prometheus_text()
+    assert "jarvis_tool_calls_made_total" in text
+    assert "tool.calls-made" not in text
+
+
+def test_log_snapshot_appends_lines(reg, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "LOGS_DIR", tmp_path / "logs2")
+    reg.log_snapshot()
+    reg.log_snapshot()
+    import json
+    log_file = tmp_path / "logs2" / "metrics.jsonl"
+    lines = [l for l in log_file.read_text().strip().splitlines() if l]
+    assert len(lines) == 2
+    for line in lines:
+        json.loads(line)  # each line is valid JSON
+
+
+def test_snapshot_uptime_increases(reg):
+    import time
+    snap1 = reg.snapshot()
+    time.sleep(0.05)
+    snap2 = reg.snapshot()
+    assert snap2["uptime_seconds"] > snap1["uptime_seconds"]
+
+
+def test_counter_inc_by_large_amount(reg):
+    reg.inc("bulk", 1000)
+    assert reg.counter("bulk").value == 1000
