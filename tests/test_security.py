@@ -122,3 +122,54 @@ def test_sign_and_verify():
 def test_verify_bad_signature():
     from jarvis.security import verify_signature
     assert verify_signature("data", "badsig", "secret") is False
+
+
+# ── ApiKey.to_dict ────────────────────────────────────────────────────────────
+
+def test_api_key_to_dict_masks_key():
+    from jarvis.security import ApiKey
+    k = ApiKey(key="jvs_abcdef1234567890", role="admin", name="test-key")
+    d = k.to_dict()
+    assert d["key_prefix"].endswith("...")
+    assert "jvs_abcde" not in d["key_prefix"] or d["key_prefix"].endswith("...")
+    assert d["role"] == "admin"
+    assert d["name"] == "test-key"
+    assert "created_at" in d
+    assert d["calls"] == 0
+
+
+def test_api_key_to_dict_includes_last_used():
+    from jarvis.security import ApiKey
+    k = ApiKey(key="jvs_x" * 4, role="user", last_used="2024-01-01T00:00:00Z")
+    d = k.to_dict()
+    assert d["last_used"] == "2024-01-01T00:00:00Z"
+
+
+# ── KeyStore.generate defaults ────────────────────────────────────────────────
+
+def test_generate_default_role_is_user(key_store):
+    raw = key_store.generate(name="default_role")
+    key = key_store.validate(raw)
+    assert key.role == "user"
+
+
+def test_generate_key_starts_with_prefix(key_store):
+    raw = key_store.generate()
+    assert raw.startswith("jvs_")
+
+
+def test_key_last_used_updated_on_validate(key_store):
+    raw = key_store.generate()
+    key = key_store.validate(raw)
+    assert key.last_used is not None
+
+
+# ── RateLimiter edge cases ────────────────────────────────────────────────────
+
+def test_rate_limiter_window_expires():
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(limit=2, window=0)  # window=0 means all timestamps expire immediately
+    rl.is_allowed("x")
+    rl.is_allowed("x")
+    # All old entries expired — should be allowed again
+    assert rl.is_allowed("x") is True
