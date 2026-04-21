@@ -366,3 +366,83 @@ async def test_process_messages_handler_exception_is_captured():
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     # No exception propagated from process_messages
+
+
+# ── SubAgent context and tool_use paths ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_subagent_run_includes_context():
+    """Line 42: context from parent is appended to the system prompt."""
+    task = SubagentTask(goal="search the web", context="User is on macOS")
+    parent = _make_parent("done")
+    agent = SubAgent(task, parent)
+    result = await agent.run()
+    assert result == "done"
+    # Verify messages.create was called (system prompt built with context)
+    parent.client.messages.create.assert_called_once()
+    call_kwargs = parent.client.messages.create.call_args[1]
+    assert "macOS" in call_kwargs["system"]
+
+
+@pytest.mark.asyncio
+async def test_subagent_run_tool_use_then_text():
+    """Lines 60-61, 66-70: tool_use block triggers parallel execution then a text reply."""
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.id = "call_1"
+    tool_block.name = "read_file"
+    tool_block.input = {"path": "/tmp/x"}
+
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "file read successfully"
+
+    response_with_tool = MagicMock()
+    response_with_tool.content = [tool_block]
+
+    response_text_only = MagicMock()
+    response_text_only.content = [text_block]
+
+    parent = MagicMock()
+    parent.client.messages.create = AsyncMock(
+        side_effect=[response_with_tool, response_text_only]
+    )
+    parent._get_model = MagicMock(return_value="claude-haiku-4-5-20251001")
+    parent.registry.anthropic_tools = MagicMock(return_value=[])
+    parent._execute_tools_parallel = AsyncMock(return_value=[{"type": "tool_result", "content": "data"}])
+
+    task = SubagentTask(goal="read a file")
+    agent = SubAgent(task, parent)
+    result = await agent.run()
+
+    assert result == "file read successfully"
+    parent._execute_tools_parallel.assert_called_once()
+    call_args = parent._execute_tools_parallel.call_args[0][0]
+    assert call_args[0]["name"] == "read_file"
+    assert call_args[0]["id"] == "call_1"
+
+
+@pytest.mark.asyncio
+async def test_subagent_run_reaches_max_turns():
+    """Line 70: max_turns exceeded without a text-only response."""
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.id = "call_x"
+    tool_block.name = "search"
+    tool_block.input = {}
+
+    response_always_tool = MagicMock()
+    response_always_tool.content = [tool_block]
+
+    parent = MagicMock()
+    parent.client.messages.create = AsyncMock(return_value=response_always_tool)
+    parent._get_model = MagicMock(return_value="claude-haiku-4-5-20251001")
+    parent.registry.anthropic_tools = MagicMock(return_value=[])
+    parent._execute_tools_parallel = AsyncMock(return_value=[])
+
+    task = SubagentTask(goal="loop forever", max_turns=3)
+    agent = SubAgent(task, parent)
+    result = await agent.run()
+
+    assert "max turns" in result.lower()
+    assert parent.client.messages.create.call_count == 3

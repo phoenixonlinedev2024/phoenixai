@@ -257,3 +257,132 @@ def test_install_piper_unsupported_platform():
         result = runner.invoke(app, ["install-piper"])
     assert result.exit_code == 1
     assert "Unsupported" in result.stdout
+
+
+# ── chat with voice (TTS paths) ───────────────────────────────────────────────
+
+def test_chat_one_shot_streaming_with_voice():
+    """Lines 60-66: streaming one-shot with --voice calls tts.speak_async."""
+    jarvis = _mock_jarvis()
+    fake_tts = MagicMock()
+    fake_tts.speak_async = AsyncMock()
+
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.voice.text_to_speech.TTSEngine", return_value=fake_tts):
+        result = runner.invoke(app, ["chat", "--stream", "--voice", "hello"])
+
+    assert result.exit_code == 0
+    fake_tts.speak_async.assert_called_once()
+
+
+def test_chat_one_shot_no_stream_with_voice():
+    """Lines 68-72: non-streaming one-shot with --voice calls tts.speak_async."""
+    jarvis = _mock_jarvis(chat_reply="Of course, Sir.")
+    fake_tts = MagicMock()
+    fake_tts.speak_async = AsyncMock()
+
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.voice.text_to_speech.TTSEngine", return_value=fake_tts):
+        result = runner.invoke(app, ["chat", "--no-stream", "--voice", "hi"])
+
+    assert result.exit_code == 0
+    fake_tts.speak_async.assert_called_once()
+
+
+# ── interactive chat loop ─────────────────────────────────────────────────────
+
+def test_chat_interactive_exit_command():
+    """Lines 75-84: interactive loop exits cleanly on 'exit' command."""
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.main.Prompt.ask", side_effect=["exit"]):
+        result = runner.invoke(app, ["chat"])
+
+    assert result.exit_code == 0
+    jarvis.end_session.assert_called_once()
+
+
+def test_chat_interactive_empty_input_then_exit():
+    """Lines 79-81: empty input is skipped, then exit terminates loop."""
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.main.Prompt.ask", side_effect=["", "  ", "quit"]):
+        result = runner.invoke(app, ["chat"])
+
+    assert result.exit_code == 0
+    jarvis.end_session.assert_called_once()
+
+
+def test_chat_interactive_non_stream_reply():
+    """Lines 95-102: non-streaming interactive reply path."""
+    jarvis = _mock_jarvis(chat_reply="Understood, Sir.")
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.main.Prompt.ask", side_effect=["tell me something", "bye"]):
+        result = runner.invoke(app, ["chat", "--no-stream"])
+
+    assert result.exit_code == 0
+    jarvis.chat.assert_called()
+
+
+def test_chat_interactive_keyboard_interrupt():
+    """Lines 104-107: KeyboardInterrupt during interactive loop calls end_session."""
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.main.Prompt.ask", side_effect=KeyboardInterrupt()):
+        result = runner.invoke(app, ["chat"])
+
+    assert result.exit_code == 0
+    jarvis.end_session.assert_called_once()
+
+
+def test_chat_interactive_stream_reply():
+    """Lines 86-93: streaming interactive reply path."""
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.main.Prompt.ask", side_effect=["what time is it?", "exit"]):
+        result = runner.invoke(app, ["chat", "--stream"])
+
+    assert result.exit_code == 0
+
+
+# ── install-piper success path ────────────────────────────────────────────────
+
+def test_install_piper_success_linux(tmp_path):
+    """Lines 285-311: install-piper downloads and extracts on linux/x86_64."""
+    import io
+    import tarfile
+
+    # Build a minimal tar.gz in memory
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="piper/piper")
+        info.size = 0
+        tar.addfile(info, io.BytesIO(b""))
+    tar_bytes = buf.getvalue()
+
+    out_dir = tmp_path / "piper_out"
+
+    def fake_retrieve(url, dest):
+        dest = str(dest)
+        if dest.endswith(".tar.gz"):
+            with open(dest, "wb") as f:
+                f.write(tar_bytes)
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("platform.machine", return_value="x86_64"), \
+         patch("urllib.request.urlretrieve", side_effect=fake_retrieve):
+        result = runner.invoke(app, ["install-piper", "--dir", str(out_dir)])
+
+    assert result.exit_code == 0
+    assert "Piper installed" in result.stdout
+
+
+def test_install_piper_download_failure(tmp_path):
+    """Lines 286-290: download failure prints error and exits with code 1."""
+    with patch("platform.system", return_value="Linux"), \
+         patch("platform.machine", return_value="x86_64"), \
+         patch("urllib.request.urlretrieve", side_effect=OSError("network error")):
+        result = runner.invoke(app, ["install-piper", "--dir", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "Download failed" in result.stdout
