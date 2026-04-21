@@ -503,3 +503,265 @@ def test_tts_get_pyttsx3_caches(monkeypatch):
         e2 = engine._get_pyttsx3()
     assert e1 is e2
     fake_pyttsx3.init.assert_called_once()
+
+
+# ── TTSEngine._get_pyttsx3 voice selection loop (lines 54-57) ────────────────
+
+def test_tts_get_pyttsx3_selects_matching_british_voice():
+    """Lines 54-57: voice selection loop picks english/uk/british/male voice."""
+    voice = MagicMock()
+    voice.name = "English (British) Male"
+    voice.id = "en-gb-male-1"
+
+    fake_engine = MagicMock()
+    fake_engine.getProperty = MagicMock(return_value=[voice])
+
+    fake_pyttsx3 = MagicMock()
+    fake_pyttsx3.init = MagicMock(return_value=fake_engine)
+
+    engine = TTSEngine(engine="pyttsx3")
+    with patch.dict(sys.modules, {"pyttsx3": fake_pyttsx3}):
+        e = engine._get_pyttsx3()
+
+    voice_calls = [c for c in fake_engine.setProperty.call_args_list if c.args[0] == "voice"]
+    assert len(voice_calls) == 1
+    assert voice_calls[0].args[1] == "en-gb-male-1"
+
+
+def test_tts_get_pyttsx3_skips_non_matching_voices():
+    """Lines 53-57: loop body not entered when voice name doesn't match."""
+    voice = MagicMock()
+    voice.name = "French Female"
+    voice.id = "fr-1"
+
+    fake_engine = MagicMock()
+    fake_engine.getProperty = MagicMock(return_value=[voice])
+
+    fake_pyttsx3 = MagicMock()
+    fake_pyttsx3.init = MagicMock(return_value=fake_engine)
+
+    engine = TTSEngine(engine="pyttsx3")
+    with patch.dict(sys.modules, {"pyttsx3": fake_pyttsx3}):
+        engine._get_pyttsx3()
+
+    voice_calls = [c for c in fake_engine.setProperty.call_args_list if c.args[0] == "voice"]
+    assert len(voice_calls) == 0
+
+
+# ── TTSEngine._play_wav (lines 96-117) ───────────────────────────────────────
+
+def test_tts_play_wav_with_pyaudio(tmp_path):
+    """Lines 96-111: _play_wav reads wav file and sends frames via pyaudio."""
+    import struct
+    import wave as wave_mod
+
+    wav_path = str(tmp_path / "test.wav")
+    with wave_mod.open(wav_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(44100)
+        wf.writeframes(struct.pack("<h", 0) * 44)
+
+    fake_stream = MagicMock()
+    fake_p = MagicMock()
+    fake_p.open.return_value = fake_stream
+
+    fake_pyaudio = MagicMock()
+    fake_pyaudio.PyAudio.return_value = fake_p
+
+    engine = TTSEngine(engine="pyttsx3")
+    with patch.dict(sys.modules, {"pyaudio": fake_pyaudio}):
+        engine._play_wav(wav_path)
+
+    fake_p.open.assert_called_once()
+    fake_stream.stop_stream.assert_called_once()
+    fake_stream.close.assert_called_once()
+    fake_p.terminate.assert_called_once()
+
+
+def test_tts_play_wav_fallback_to_system_player(tmp_path, monkeypatch):
+    """Lines 112-117: when pyaudio unavailable, fallback to aplay/afplay/paplay."""
+    import struct
+    import wave as wave_mod
+
+    wav_path = str(tmp_path / "test.wav")
+    with wave_mod.open(wav_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(44100)
+        wf.writeframes(struct.pack("<h", 0) * 4)
+
+    engine = TTSEngine(engine="pyttsx3")
+    fake_run = MagicMock()
+
+    with patch.dict(sys.modules, {"pyaudio": None}), \
+         patch("shutil.which", return_value="/usr/bin/aplay"), \
+         patch("subprocess.run", fake_run):
+        engine._play_wav(wav_path)
+
+    fake_run.assert_called_once()
+    assert "aplay" in str(fake_run.call_args)
+
+
+def test_tts_play_wav_no_player_available(tmp_path):
+    """Lines 114-117: when no system player found, _play_wav exits silently."""
+    import struct
+    import wave as wave_mod
+
+    wav_path = str(tmp_path / "silence.wav")
+    with wave_mod.open(wav_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(44100)
+        wf.writeframes(struct.pack("<h", 0) * 4)
+
+    engine = TTSEngine(engine="pyttsx3")
+    fake_run = MagicMock()
+    with patch.dict(sys.modules, {"pyaudio": None}), \
+         patch("shutil.which", return_value=None), \
+         patch("subprocess.run", fake_run):
+        engine._play_wav(wav_path)
+
+    fake_run.assert_not_called()
+
+
+# ── TTSEngine._speak_elevenlabs success path (lines 127-133) ─────────────────
+
+def test_tts_speak_elevenlabs_success(monkeypatch):
+    """Lines 125-133: _speak_elevenlabs calls ElevenLabs API and plays audio."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", True)
+    monkeypatch.setattr(cfg, "ELEVENLABS_API_KEY", "test-key")
+    monkeypatch.setattr(cfg, "ELEVENLABS_VOICE_ID", "voice-xyz")
+
+    fake_client = MagicMock()
+    fake_client.text_to_speech.convert.return_value = b"audio_bytes"
+    fake_play = MagicMock()
+
+    fake_eleven = MagicMock()
+    fake_eleven.ElevenLabs = MagicMock(return_value=fake_client)
+    fake_eleven.play = fake_play
+
+    engine = TTSEngine(engine="elevenlabs")
+    with patch.dict(sys.modules, {"elevenlabs": fake_eleven}):
+        engine.speak("test text")
+
+    fake_play.assert_called_once_with(b"audio_bytes")
+
+
+# ── TTSEngine.set_voice_by_name exception path (lines 149-150) ───────────────
+
+def test_tts_set_voice_by_name_exception_returns_false():
+    """Lines 149-150: exception in getProperty returns False."""
+    eng = TTSEngine(engine="pyttsx3")
+    eng._pyttsx3_engine = MagicMock()
+    eng._pyttsx3_engine.getProperty.side_effect = RuntimeError("engine crashed")
+    result = eng.set_voice_by_name("english")
+    assert result is False
+
+
+# ── STTEngine._listen_loop full body (lines 44-68) ───────────────────────────
+
+def test_stt_listen_loop_wake_word_with_command(monkeypatch):
+    """Lines 44-65: listen loop detects wake word and calls on_transcript with command."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "WAKE_WORD", "jarvis")
+
+    stt = STTEngine()
+    transcripts = []
+    call_count = [0]
+
+    def fake_recognize(audio):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return "hey jarvis open the pod bay doors"
+        stt._running = False
+        raise Exception("timeout")
+
+    fake_recognizer = MagicMock()
+    fake_recognizer.recognize_google.side_effect = fake_recognize
+    fake_recognizer.listen.return_value = MagicMock()
+
+    fake_sr = MagicMock()
+    fake_sr.Recognizer.return_value = fake_recognizer
+
+    fake_mic = MagicMock()
+    fake_mic.__enter__ = MagicMock(return_value=fake_mic)
+    fake_mic.__exit__ = MagicMock(return_value=False)
+    fake_sr.Microphone.return_value = fake_mic
+
+    stt._running = True
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr}):
+        stt._listen_loop(lambda t: transcripts.append(t))
+
+    assert len(transcripts) == 1
+    assert "open the pod bay doors" in transcripts[0]
+
+
+def test_stt_listen_loop_wake_word_only_sends_wake_signal(monkeypatch):
+    """Lines 63-65: when wake word with no command, sends '_wake_only_'."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "WAKE_WORD", "jarvis")
+
+    stt = STTEngine()
+    transcripts = []
+    call_count = [0]
+
+    def fake_recognize(audio):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return "jarvis"  # wake word only
+        stt._running = False
+        raise Exception("timeout")
+
+    fake_recognizer = MagicMock()
+    fake_recognizer.recognize_google.side_effect = fake_recognize
+    fake_recognizer.listen.return_value = MagicMock()
+
+    fake_sr = MagicMock()
+    fake_sr.Recognizer.return_value = fake_recognizer
+
+    fake_mic = MagicMock()
+    fake_mic.__enter__ = MagicMock(return_value=fake_mic)
+    fake_mic.__exit__ = MagicMock(return_value=False)
+    fake_sr.Microphone.return_value = fake_mic
+
+    stt._running = True
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr}):
+        stt._listen_loop(lambda t: transcripts.append(t))
+
+    assert transcripts == ["_wake_only_"]
+
+
+def test_stt_listen_loop_exception_continues(monkeypatch):
+    """Lines 67-68: exception in recognize_google is silently caught and loop continues."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "WAKE_WORD", "jarvis")
+
+    stt = STTEngine()
+    call_count = [0]
+
+    def fake_recognize(audio):
+        call_count[0] += 1
+        if call_count[0] < 3:
+            raise Exception("recognition error")
+        stt._running = False
+        raise Exception("stop")
+
+    fake_recognizer = MagicMock()
+    fake_recognizer.recognize_google.side_effect = fake_recognize
+    fake_recognizer.listen.return_value = MagicMock()
+
+    fake_sr = MagicMock()
+    fake_sr.Recognizer.return_value = fake_recognizer
+
+    fake_mic = MagicMock()
+    fake_mic.__enter__ = MagicMock(return_value=fake_mic)
+    fake_mic.__exit__ = MagicMock(return_value=False)
+    fake_sr.Microphone.return_value = fake_mic
+
+    stt._running = True
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr}):
+        stt._listen_loop(lambda t: None)
+
+    assert call_count[0] == 3  # continued despite errors

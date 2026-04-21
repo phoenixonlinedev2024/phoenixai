@@ -1043,3 +1043,111 @@ async def test_mattermost_listen_handles_posted_event(monkeypatch, fake_jarvis):
             await run_mattermost_bot(fake_jarvis)
 
     fake_jarvis.chat.assert_awaited_once()
+
+
+# ── Signal bot run() and send() (lines 27-58, 71-72) ────────────────────────
+
+@pytest.mark.asyncio
+async def test_signal_send_calls_subprocess(monkeypatch, fake_jarvis):
+    """Lines 27-32: send() creates a subprocess and waits for it."""
+    from jarvis.config import cfg
+    from jarvis.bots.signal_bot import SignalBot
+
+    monkeypatch.setattr(cfg, "SIGNAL_CLI_PATH", "/usr/bin/signal-cli")
+    monkeypatch.setattr(cfg, "SIGNAL_PHONE_NUMBER", "+15551234")
+
+    fake_proc = MagicMock()
+    fake_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        bot = SignalBot(fake_jarvis)
+        await bot.send("+15559999", "hello there")
+
+    fake_proc.wait.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_signal_run_reads_lines_and_handles_events(monkeypatch, fake_jarvis):
+    """Lines 39-54: run() starts daemon proc and processes JSON lines."""
+    import json
+    from jarvis.config import cfg
+    from jarvis.bots.signal_bot import SignalBot
+
+    monkeypatch.setattr(cfg, "SIGNAL_CLI_PATH", "/usr/bin/signal-cli")
+    monkeypatch.setattr(cfg, "SIGNAL_PHONE_NUMBER", "+15551234")
+
+    event = {"envelope": {"source": "+15550001", "dataMessage": {"message": "hi bot"}}}
+    lines = [json.dumps(event).encode(), b""]
+    line_idx = [0]
+
+    async def fake_readline():
+        val = lines[line_idx[0]]
+        line_idx[0] += 1
+        return val
+
+    async def fake_wait_for(coro, timeout):
+        return await coro
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+    fake_proc.stdout.readline = fake_readline
+
+    async def fake_send(recipient, msg):
+        pass
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)), \
+         patch("asyncio.wait_for", fake_wait_for):
+        bot = SignalBot(fake_jarvis)
+        bot.send = fake_send
+        bot._running = True
+        await bot.run()
+
+    fake_jarvis.chat.assert_awaited_once_with("hi bot")
+
+
+@pytest.mark.asyncio
+async def test_signal_run_handles_timeout(monkeypatch, fake_jarvis):
+    """Lines 55-56: TimeoutError from wait_for is caught and loop continues."""
+    from jarvis.config import cfg
+    from jarvis.bots.signal_bot import SignalBot
+
+    monkeypatch.setattr(cfg, "SIGNAL_CLI_PATH", "/usr/bin/signal-cli")
+    monkeypatch.setattr(cfg, "SIGNAL_PHONE_NUMBER", "+15551234")
+
+    call_count = [0]
+
+    async def fake_readline():
+        return b""
+
+    async def fake_wait_for(coro, timeout):
+        call_count[0] += 1
+        coro.close()
+        if call_count[0] == 1:
+            raise asyncio.TimeoutError()
+        return b""  # empty → break loop on second call
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+    fake_proc.stdout.readline = fake_readline
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)), \
+         patch("asyncio.wait_for", fake_wait_for):
+        bot = SignalBot(fake_jarvis)
+        bot._running = True
+        await bot.run()
+
+    assert call_count[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_signal_handle_event_exception_is_caught(monkeypatch, fake_jarvis, capsys):
+    """Lines 71-72: exception inside _handle_event is caught and printed."""
+    from jarvis.bots.signal_bot import SignalBot
+
+    fake_jarvis.chat = AsyncMock(side_effect=RuntimeError("api error"))
+    bot = SignalBot(fake_jarvis)
+    await bot._handle_event({
+        "envelope": {"source": "+15550000", "dataMessage": {"message": "crash"}}
+    })
+    out = capsys.readouterr().out
+    assert "Handle error" in out
