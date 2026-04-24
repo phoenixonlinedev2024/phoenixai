@@ -623,6 +623,21 @@ def test_modal_run_modal_success(monkeypatch):
 
 # ── ModalSandbox _run_modal_python success path (lines 53-82) ────────────────
 
+def test_modal_run_modal_exception_path(monkeypatch):
+    """Lines 49-50: _run_modal except clause fires when modal raises."""
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+
+    fake_modal = MagicMock()
+    fake_modal.App.lookup.side_effect = RuntimeError("modal quota exceeded")
+
+    sb = ModalSandbox()
+    with patch.dict(sys.modules, {"modal": fake_modal}):
+        result = sb._run_modal("echo hi", 30)
+
+    assert result.exit_code == 1
+    assert "Modal error" in result.stderr
+
+
 def test_modal_run_modal_python_success(monkeypatch):
     """Lines 53-82: _run_modal_python returns ExecResult on modal API success."""
     from jarvis.sandbox.modal_sandbox import ModalSandbox
@@ -655,6 +670,21 @@ def test_modal_run_modal_python_success(monkeypatch):
 
     assert result.exit_code == 0
     assert result.stdout == "42\n"
+
+
+def test_modal_run_modal_python_exception_path(monkeypatch):
+    """Lines 81-82: _run_modal_python except clause fires when modal raises."""
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+
+    fake_modal = MagicMock()
+    fake_modal.App.lookup.side_effect = RuntimeError("modal py quota exceeded")
+
+    sb = ModalSandbox()
+    with patch.dict(sys.modules, {"modal": fake_modal}):
+        result = sb._run_modal_python("print(42)", 30)
+
+    assert result.exit_code == 1
+    assert "Modal Python error" in result.stderr
 
 
 # ── SingularitySandbox health_check success (lines 107-108) ──────────────────
