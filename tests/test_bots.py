@@ -1151,3 +1151,381 @@ async def test_signal_handle_event_exception_is_caught(monkeypatch, fake_jarvis,
     })
     out = capsys.readouterr().out
     assert "Handle error" in out
+
+
+# ── Signal: parse error in run() loop (lines 57-58) ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_signal_run_parse_error_is_caught(monkeypatch, fake_jarvis, capsys):
+    """Lines 57-58: non-timeout exception in run() loop is caught and printed."""
+    from jarvis.config import cfg
+    from jarvis.bots.signal_bot import SignalBot
+
+    monkeypatch.setattr(cfg, "SIGNAL_CLI_PATH", "/usr/bin/signal-cli")
+    monkeypatch.setattr(cfg, "SIGNAL_PHONE_NUMBER", "+15551234")
+
+    lines = [b"not-valid-json", b""]
+    line_idx = [0]
+
+    async def fake_readline():
+        val = lines[line_idx[0]]
+        line_idx[0] += 1
+        return val
+
+    async def fake_wait_for(coro, timeout):
+        return await coro
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+    fake_proc.stdout.readline = fake_readline
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)), \
+         patch("asyncio.wait_for", fake_wait_for):
+        bot = SignalBot(fake_jarvis)
+        await bot.run()
+
+    out = capsys.readouterr().out
+    assert "Parse error" in out
+
+
+# ── IRC: empty line, non-PRIVMSG, reconnect (lines 47, 56, 70-72) ────────────
+
+@pytest.mark.asyncio
+async def test_irc_empty_line_is_skipped(monkeypatch, fake_jarvis):
+    """Line 47: empty text after readline is skipped via continue."""
+    from jarvis.config import cfg
+    from jarvis.bots.irc_bot import run_irc_bot
+
+    monkeypatch.setattr(cfg, "IRC_SERVER", "irc.example.com")
+    monkeypatch.setattr(cfg, "IRC_PORT", 6667)
+    monkeypatch.setattr(cfg, "IRC_NICK", "jarvis")
+    monkeypatch.setattr(cfg, "IRC_CHANNELS", "")
+
+    reader = _make_irc_reader(b"\r\n", b":user!u@h PRIVMSG jarvis :hello\r\n")
+    writer = _make_irc_writer()
+
+    with patch("asyncio.open_connection", AsyncMock(return_value=(reader, writer))), \
+         patch("asyncio.sleep", AsyncMock()):
+        with pytest.raises(asyncio.CancelledError):
+            await run_irc_bot(fake_jarvis)
+
+    fake_jarvis.chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_irc_server_message_skipped(monkeypatch, fake_jarvis):
+    """Line 56: server message not matching PRIVMSG regex is skipped via continue."""
+    from jarvis.config import cfg
+    from jarvis.bots.irc_bot import run_irc_bot
+
+    monkeypatch.setattr(cfg, "IRC_SERVER", "irc.example.com")
+    monkeypatch.setattr(cfg, "IRC_PORT", 6667)
+    monkeypatch.setattr(cfg, "IRC_NICK", "jarvis")
+    monkeypatch.setattr(cfg, "IRC_CHANNELS", "")
+
+    reader = _make_irc_reader(b":server.example.com 001 jarvis :Welcome to IRC\r\n")
+    writer = _make_irc_writer()
+
+    with patch("asyncio.open_connection", AsyncMock(return_value=(reader, writer))), \
+         patch("asyncio.sleep", AsyncMock()):
+        with pytest.raises(asyncio.CancelledError):
+            await run_irc_bot(fake_jarvis)
+
+    fake_jarvis.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_irc_exception_triggers_reconnect(monkeypatch, fake_jarvis, capsys):
+    """Lines 70-72: exception in loop triggers reconnect after sleep."""
+    from jarvis.config import cfg
+    from jarvis.bots.irc_bot import run_irc_bot
+
+    monkeypatch.setattr(cfg, "IRC_SERVER", "irc.example.com")
+    monkeypatch.setattr(cfg, "IRC_PORT", 6667)
+    monkeypatch.setattr(cfg, "IRC_NICK", "jarvis")
+    monkeypatch.setattr(cfg, "IRC_CHANNELS", "")
+
+    async def raise_error():
+        raise RuntimeError("connection dropped")
+
+    async def raise_cancelled():
+        raise asyncio.CancelledError()
+
+    first_reader = MagicMock()
+    first_reader.readline = raise_error
+    second_reader = MagicMock()
+    second_reader.readline = raise_cancelled
+
+    writer1 = _make_irc_writer()
+    writer2 = _make_irc_writer()
+
+    with patch("asyncio.open_connection", AsyncMock(side_effect=[(first_reader, writer1), (second_reader, writer2)])), \
+         patch("asyncio.sleep", AsyncMock()):
+        with pytest.raises(asyncio.CancelledError):
+            await run_irc_bot(fake_jarvis)
+
+    assert "Reconnecting" in capsys.readouterr().out
+
+
+# ── Mattermost: event filtering and exception handling ───────────────────────
+
+def _make_mm_env(monkeypatch, fake_jarvis):
+    """Return fake modules for mattermost tests."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "MATTERMOST_URL", "http://mm.example.com")
+    monkeypatch.setattr(cfg, "MATTERMOST_TOKEN", "tok")
+    monkeypatch.setattr(cfg, "MATTERMOST_BOT_USER_ID", "bot_uid")
+    monkeypatch.setattr(cfg, "MATTERMOST_BOT_NAME", "jarvis")
+
+
+def _make_mm_ws_mocks(messages):
+    """Return (fake_websockets, fake_aiohttp) for given message list."""
+    import json
+
+    async def fake_aiter(ws):
+        for raw in messages:
+            yield raw
+        raise asyncio.CancelledError()
+
+    fake_ws = MagicMock()
+    fake_ws.send = AsyncMock()
+    fake_ws.__aiter__ = fake_aiter
+
+    fake_ws_ctx = MagicMock()
+    fake_ws_ctx.__aenter__ = AsyncMock(return_value=fake_ws)
+    fake_ws_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    fake_websockets = MagicMock()
+    fake_websockets.connect = MagicMock(return_value=fake_ws_ctx)
+
+    fake_session = MagicMock()
+    fake_session.post = AsyncMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+
+    fake_aiohttp = MagicMock()
+    fake_aiohttp.ClientSession = MagicMock(return_value=fake_session)
+
+    return fake_websockets, fake_aiohttp
+
+
+@pytest.mark.asyncio
+async def test_mattermost_skips_non_posted_event(monkeypatch, fake_jarvis):
+    """Line 47: non-posted events are skipped via continue."""
+    import json
+    from jarvis.bots.mattermost_bot import run_mattermost_bot
+    _make_mm_env(monkeypatch, fake_jarvis)
+
+    event = {"event": "user_updated", "data": {}}
+    fake_websockets, fake_aiohttp = _make_mm_ws_mocks([json.dumps(event)])
+
+    with patch.dict(sys.modules, {"websockets": fake_websockets, "aiohttp": fake_aiohttp}), \
+         patch("asyncio.sleep", AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await run_mattermost_bot(fake_jarvis)
+
+    fake_jarvis.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mattermost_skips_own_bot_message(monkeypatch, fake_jarvis):
+    """Line 53: message from bot's own user_id is skipped via continue."""
+    import json
+    from jarvis.bots.mattermost_bot import run_mattermost_bot
+    _make_mm_env(monkeypatch, fake_jarvis)
+
+    post = {"message": "hello", "channel_id": "chan1", "user_id": "bot_uid"}
+    event = {"event": "posted", "data": {"post": json.dumps(post)}}
+    fake_websockets, fake_aiohttp = _make_mm_ws_mocks([json.dumps(event)])
+
+    with patch.dict(sys.modules, {"websockets": fake_websockets, "aiohttp": fake_aiohttp}), \
+         patch("asyncio.sleep", AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await run_mattermost_bot(fake_jarvis)
+
+    fake_jarvis.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mattermost_skips_empty_message(monkeypatch, fake_jarvis):
+    """Line 53: empty message is skipped via continue."""
+    import json
+    from jarvis.bots.mattermost_bot import run_mattermost_bot
+    _make_mm_env(monkeypatch, fake_jarvis)
+
+    post = {"message": "", "channel_id": "chan1", "user_id": "user1"}
+    event = {"event": "posted", "data": {"post": json.dumps(post)}}
+    fake_websockets, fake_aiohttp = _make_mm_ws_mocks([json.dumps(event)])
+
+    with patch.dict(sys.modules, {"websockets": fake_websockets, "aiohttp": fake_aiohttp}), \
+         patch("asyncio.sleep", AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await run_mattermost_bot(fake_jarvis)
+
+    fake_jarvis.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mattermost_parse_error_inside_loop(monkeypatch, fake_jarvis, capsys):
+    """Lines 58-59: exception inside async for loop is caught and printed."""
+    from jarvis.bots.mattermost_bot import run_mattermost_bot
+    _make_mm_env(monkeypatch, fake_jarvis)
+
+    fake_websockets, fake_aiohttp = _make_mm_ws_mocks(["invalid-json-payload"])
+
+    with patch.dict(sys.modules, {"websockets": fake_websockets, "aiohttp": fake_aiohttp}), \
+         patch("asyncio.sleep", AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await run_mattermost_bot(fake_jarvis)
+
+    assert "Parse error" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_mattermost_outer_exception_triggers_reconnect(monkeypatch, fake_jarvis, capsys):
+    """Lines 65-66: exception from listen() causes reconnect after sleep."""
+    import json
+    from jarvis.bots.mattermost_bot import run_mattermost_bot
+    _make_mm_env(monkeypatch, fake_jarvis)
+
+    call_count = [0]
+
+    async def fake_aiter_first(ws):
+        raise RuntimeError("websocket closed")
+        yield  # noqa: unreachable — makes this an async generator
+
+    async def fake_aiter_second(ws):
+        raise asyncio.CancelledError()
+        yield  # noqa: unreachable — makes this an async generator
+
+    def make_ws_ctx(aiter_fn):
+        ws = MagicMock()
+        ws.send = AsyncMock()
+        ws.__aiter__ = aiter_fn
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=ws)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    ctxs = [make_ws_ctx(fake_aiter_first), make_ws_ctx(fake_aiter_second)]
+
+    def make_connect():
+        it = iter(ctxs)
+        def connect(*a, **kw):
+            return next(it)
+        return connect
+
+    fake_websockets = MagicMock()
+    fake_websockets.connect = MagicMock(side_effect=make_connect())
+
+    fake_session = MagicMock()
+    fake_session.post = AsyncMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+    fake_aiohttp = MagicMock()
+    fake_aiohttp.ClientSession = MagicMock(return_value=fake_session)
+
+    with patch.dict(sys.modules, {"websockets": fake_websockets, "aiohttp": fake_aiohttp}), \
+         patch("asyncio.sleep", AsyncMock()):
+        with pytest.raises(asyncio.CancelledError):
+            await run_mattermost_bot(fake_jarvis)
+
+    assert "Reconnecting" in capsys.readouterr().out
+
+
+# ── Slack: exception paths in handle_mention and handle_message ───────────────
+
+@pytest.mark.asyncio
+async def test_slack_handle_mention_exception(monkeypatch, fake_jarvis):
+    """Lines 39-40: exception in handle_mention is caught and sent as error message."""
+    fake_jarvis.chat = AsyncMock(side_effect=RuntimeError("api down"))
+    handlers, run_fn, mods = _setup_slack_bot(monkeypatch, fake_jarvis)
+    with patch.dict(sys.modules, mods):
+        await run_fn(fake_jarvis)
+    say = AsyncMock()
+    await handlers["event:app_mention"]({"text": "<@UBOT> help"}, say)
+    called_args = [c.args[0] for c in say.call_args_list]
+    assert any("Error" in a for a in called_args)
+
+
+@pytest.mark.asyncio
+async def test_slack_handle_message_exception(monkeypatch, fake_jarvis):
+    """Lines 48-49: exception in handle_message is caught and sent as error message."""
+    fake_jarvis.chat = AsyncMock(side_effect=RuntimeError("crash"))
+    handlers, run_fn, mods = _setup_slack_bot(monkeypatch, fake_jarvis)
+    with patch.dict(sys.modules, mods):
+        await run_fn(fake_jarvis)
+    say = AsyncMock()
+    await handlers["message:jarvis"]({"text": "hey jarvis"}, say)
+    called_args = [c.args[0] for c in say.call_args_list]
+    assert any("Error" in a for a in called_args)
+
+
+# ── Telegram: long reply split into chunks (lines 54-55) ─────────────────────
+
+@pytest.mark.asyncio
+async def test_telegram_handle_message_long_reply(monkeypatch, fake_jarvis):
+    """Lines 53-55: reply longer than 4096 chars is sent in multiple chunks."""
+    long_reply = "x" * 5000
+    fake_jarvis.chat = AsyncMock(return_value=long_reply)
+    cmds, msgs, run_fn, mods = _setup_telegram_bot(monkeypatch, fake_jarvis)
+    with patch.dict(sys.modules, mods):
+        await run_fn(fake_jarvis)
+    update = MagicMock()
+    update.message.text = "give me a long answer"
+    update.effective_chat.id = 42
+    update.message.reply_text = AsyncMock()
+    ctx = MagicMock()
+    ctx.bot.send_chat_action = AsyncMock()
+    await msgs[0](update, ctx)
+    assert update.message.reply_text.call_count >= 2
+
+
+# ── WhatsApp: empty-text meta message and meta exception (lines 64, 68-70) ───
+
+def test_whatsapp_meta_empty_text_returns_ok(monkeypatch, fake_jarvis):
+    """Line 64: meta message with no text body returns ok without calling chat."""
+    from fastapi.testclient import TestClient
+    app = _build_app_with_whatsapp(fake_jarvis)
+    with TestClient(app) as client:
+        resp = client.post("/whatsapp/meta", json={
+            "entry": [{"changes": [{"value": {"messages": [{"from": "+1", "text": {}}]}}]}]
+        })
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    fake_jarvis.chat.assert_not_awaited()
+
+
+def test_whatsapp_meta_chat_exception_is_swallowed(monkeypatch, fake_jarvis, capsys):
+    """Lines 68-70: exception from jarvis.chat in meta handler is caught."""
+    fake_jarvis.chat = AsyncMock(side_effect=RuntimeError("api error"))
+    from fastapi.testclient import TestClient
+    with patch("jarvis.bots.whatsapp_bot._send_meta_whatsapp"):
+        app = _build_app_with_whatsapp(fake_jarvis)
+        with TestClient(app) as client:
+            resp = client.post("/whatsapp/meta", json={
+                "entry": [{"changes": [{"value": {"messages": [{"from": "+1", "text": {"body": "hi"}}]}}]}]
+            })
+    assert resp.status_code == 200
+    assert "Error" in capsys.readouterr().out
+
+
+def test_send_twilio_whatsapp_success(monkeypatch, capsys):
+    """Lines 76-77: _send_twilio_whatsapp calls Twilio Client when SDK available."""
+    from jarvis.bots.whatsapp_bot import _send_twilio_whatsapp
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "TWILIO_ACCOUNT_SID", "ACtest")
+    monkeypatch.setattr(cfg, "TWILIO_AUTH_TOKEN", "authtoken")
+    monkeypatch.setattr(cfg, "TWILIO_WHATSAPP_FROM", "+15005550006")
+
+    fake_client = MagicMock()
+    fake_Client = MagicMock(return_value=fake_client)
+    fake_twilio_rest = MagicMock()
+    fake_twilio_rest.Client = fake_Client
+    fake_twilio = MagicMock()
+
+    with patch.dict(sys.modules, {"twilio": fake_twilio, "twilio.rest": fake_twilio_rest}):
+        _send_twilio_whatsapp("whatsapp:+15550001", "hello from JARVIS")
+
+    fake_Client.assert_called_once_with("ACtest", "authtoken")
+    fake_client.messages.create.assert_called_once()
