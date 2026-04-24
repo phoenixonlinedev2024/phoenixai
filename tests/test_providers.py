@@ -286,3 +286,56 @@ async def test_create_message_with_tools(router):
     kwargs = mock_client.messages.create.call_args[1]
     assert "tools" in kwargs
     assert resp.content[0].text == "used tools"
+
+
+# ── ImportError fallback paths (lines 38-39, 52-53, 61-62) ───────────────────
+
+def test_openrouter_returns_none_on_import_error():
+    """Lines 38-39: _openrouter() returns None when openai not installed."""
+    from unittest.mock import patch
+    router = ProviderRouter()
+    with patch.dict(sys.modules, {"openai": None}):
+        result = router._openrouter()
+    assert result is None
+
+
+def test_openai_compat_success_with_url(monkeypatch):
+    """Lines 46-51: _openai_compat() creates client when URL is configured."""
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENAI_COMPAT_BASE_URL", "http://localhost:8080")
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENAI_COMPAT_API_KEY", "my-key")
+    router = ProviderRouter()
+    result = router._openai_compat()
+    assert result is not None
+    assert "openai_compat" in router._clients
+
+
+def test_openai_compat_returns_none_on_import_error(monkeypatch):
+    """Lines 52-53: _openai_compat() returns None when openai not installed."""
+    from unittest.mock import patch
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENAI_COMPAT_BASE_URL", "http://localhost:8080")
+    router = ProviderRouter()
+    with patch.dict(sys.modules, {"openai": None}):
+        result = router._openai_compat()
+    assert result is None
+
+
+def test_ollama_returns_none_on_import_error():
+    """Lines 61-62: _ollama() returns None when ollama not installed."""
+    from unittest.mock import patch
+    router = ProviderRouter()
+    with patch.dict(sys.modules, {"ollama": None}):
+        result = router._ollama()
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_health_check_swallows_provider_exception(monkeypatch):
+    """Lines 139-140: health_check returns False when a provider method raises."""
+    router = ProviderRouter()
+
+    def _raise():
+        raise RuntimeError("provider auth failed")
+
+    monkeypatch.setattr(router, "_anthropic", _raise)
+    result = await router.health_check()
+    assert result["anthropic"] is False
