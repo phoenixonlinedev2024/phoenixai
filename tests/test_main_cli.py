@@ -386,3 +386,183 @@ def test_install_piper_download_failure(tmp_path):
 
     assert result.exit_code == 1
     assert "Download failed" in result.stdout
+
+
+def test_install_piper_success_windows(tmp_path):
+    """Lines 296-298: Windows platform extracts .zip archive."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("piper/piper.exe", b"")
+    zip_bytes = buf.getvalue()
+
+    out_dir = tmp_path / "piper_out"
+
+    def fake_retrieve(url, dest):
+        if str(dest).endswith(".zip"):
+            with open(str(dest), "wb") as f:
+                f.write(zip_bytes)
+
+    with patch("platform.system", return_value="Windows"), \
+         patch("platform.machine", return_value="AMD64"), \
+         patch("urllib.request.urlretrieve", side_effect=fake_retrieve):
+        result = runner.invoke(app, ["install-piper", "--dir", str(out_dir)])
+
+    assert result.exit_code == 0
+    assert "Piper installed" in result.stdout
+
+
+def test_install_piper_model_download_warning(tmp_path):
+    """Lines 305-306: model download failure prints yellow warning but continues."""
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="piper/piper")
+        info.size = 0
+        tar.addfile(info, io.BytesIO(b""))
+    tar_bytes = buf.getvalue()
+
+    out_dir = tmp_path / "piper_out"
+    call_count = [0]
+
+    def fake_retrieve(url, dest):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            with open(str(dest), "wb") as f:
+                f.write(tar_bytes)
+        else:
+            raise OSError("model unavailable")
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("platform.machine", return_value="x86_64"), \
+         patch("urllib.request.urlretrieve", side_effect=fake_retrieve):
+        result = runner.invoke(app, ["install-piper", "--dir", str(out_dir)])
+
+    assert result.exit_code == 0
+    assert "Model download warning" in result.stdout
+
+
+# ── _get_jarvis creates Jarvis instance (lines 32-33) ────────────────────────
+
+def test_get_jarvis_creates_instance():
+    """Lines 32-33: _get_jarvis() imports Jarvis and returns an instance."""
+    from jarvis.main import _get_jarvis
+    fake_instance = MagicMock()
+    with patch("jarvis.core.Jarvis", return_value=fake_instance):
+        result = _get_jarvis()
+    assert result is fake_instance
+
+
+# ── Interactive chat with voice TTS (lines 94, 102) ──────────────────────────
+
+def test_chat_interactive_stream_with_voice():
+    """Line 94: interactive streaming with --voice calls tts.speak_async."""
+    jarvis = _mock_jarvis()
+    fake_tts = MagicMock()
+    fake_tts.speak_async = AsyncMock()
+
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.voice.text_to_speech.TTSEngine", return_value=fake_tts), \
+         patch("jarvis.main.Prompt.ask", side_effect=["hello jarvis", "exit"]):
+        result = runner.invoke(app, ["chat", "--stream", "--voice"])
+
+    assert result.exit_code == 0
+    fake_tts.speak_async.assert_called()
+
+
+def test_chat_interactive_no_stream_with_voice():
+    """Line 102: interactive non-streaming with --voice calls tts.speak_async."""
+    jarvis = _mock_jarvis(chat_reply="Of course, Sir.")
+    fake_tts = MagicMock()
+    fake_tts.speak_async = AsyncMock()
+
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.voice.text_to_speech.TTSEngine", return_value=fake_tts), \
+         patch("jarvis.main.Prompt.ask", side_effect=["tell me something", "exit"]):
+        result = runner.invoke(app, ["chat", "--no-stream", "--voice"])
+
+    assert result.exit_code == 0
+    fake_tts.speak_async.assert_called()
+
+
+# ── voice command (lines 132-176) ────────────────────────────────────────────
+
+def test_voice_command_full(monkeypatch):
+    """Lines 132-176: voice() starts TTS+STT, handles transcript, exits on KBI."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "STT_ENGINE", "pyttsx3")
+
+    jarvis = _mock_jarvis()
+    fake_tts = MagicMock()
+    fake_stt = MagicMock()
+    mock_future = MagicMock()
+    mock_future.result.return_value = "Voice reply"
+
+    def fake_start_listening(cb):
+        cb("_wake_only_")               # covers wake-only path (lines 154-156)
+        cb("what is the time")          # covers normal chat path (lines 157-164)
+
+    fake_stt.start_listening = MagicMock(side_effect=fake_start_listening)
+
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.voice.text_to_speech.TTSEngine", return_value=fake_tts), \
+         patch("jarvis.voice.speech_to_text.STTEngine", return_value=fake_stt), \
+         patch("asyncio.run_coroutine_threadsafe", return_value=mock_future), \
+         patch("asyncio.sleep", AsyncMock(side_effect=KeyboardInterrupt())):
+        result = runner.invoke(app, ["voice"])
+
+    assert result.exit_code == 0
+    fake_tts.speak.assert_called()
+    fake_stt.stop_listening.assert_called_once()
+
+
+def test_voice_command_whisper_stt(monkeypatch):
+    """Lines 143-144: voice() uses WhisperSTT when STT_ENGINE='whisper'."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "STT_ENGINE", "whisper")
+    monkeypatch.setattr(cfg, "WHISPER_MODEL", "base")
+
+    jarvis = _mock_jarvis()
+    fake_tts = MagicMock()
+    fake_whisper_stt = MagicMock()
+    fake_whisper_stt.start_listening = MagicMock()
+
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.voice.text_to_speech.TTSEngine", return_value=fake_tts), \
+         patch("jarvis.voice.whisper_stt.WhisperSTT", return_value=fake_whisper_stt), \
+         patch("asyncio.sleep", AsyncMock(side_effect=KeyboardInterrupt())):
+        result = runner.invoke(app, ["voice"])
+
+    assert result.exit_code == 0
+    fake_whisper_stt.start_listening.assert_called_once()
+
+
+def test_voice_command_transcript_error(monkeypatch):
+    """Lines 163-164: on_transcript exception path is caught and printed."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "STT_ENGINE", "pyttsx3")
+
+    jarvis = _mock_jarvis()
+    fake_tts = MagicMock()
+    fake_stt = MagicMock()
+    mock_future = MagicMock()
+    mock_future.result.side_effect = RuntimeError("timeout")
+
+    def fake_start_listening(cb):
+        cb("hello jarvis")
+
+    fake_stt.start_listening = MagicMock(side_effect=fake_start_listening)
+
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.voice.text_to_speech.TTSEngine", return_value=fake_tts), \
+         patch("jarvis.voice.speech_to_text.STTEngine", return_value=fake_stt), \
+         patch("asyncio.run_coroutine_threadsafe", return_value=mock_future), \
+         patch("asyncio.sleep", AsyncMock(side_effect=KeyboardInterrupt())):
+        result = runner.invoke(app, ["voice"])
+
+    assert result.exit_code == 0
+    assert "Error" in result.stdout

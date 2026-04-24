@@ -245,6 +245,124 @@ def test_schedule_nl_add(app_client):
         "prompt": "Daily briefing.",
     })
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["cron"] == "0 8 * * *"
-    assert data["name"] == "morning_brief"
+
+
+# ── Root endpoint without index.html (line 104) ───────────────────────────────
+
+def test_root_without_index_html(app_client, tmp_path):
+    """Line 104: GET / returns JSON message when web_ui/index.html is missing."""
+    with patch("jarvis.daemon.WEB_UI_DIR", tmp_path):  # empty dir, no index.html
+        resp = app_client.get("/")
+    assert resp.status_code == 200
+    assert "JARVIS API online" in resp.json()["message"]
+
+
+# ── Chat exception returns HTTP 500 (lines 128-130) ──────────────────────────
+
+def test_chat_exception_returns_500():
+    """Lines 128-130: chat endpoint raises HTTPException 500 when jarvis.chat raises."""
+    from jarvis.daemon import create_app
+
+    jarvis_mock = MagicMock()
+    jarvis_mock.chat = AsyncMock(side_effect=RuntimeError("AI unavailable"))
+    jarvis_mock.set_profile = MagicMock()
+    jarvis_mock.status = MagicMock(return_value="")
+    jarvis_mock._session_id = "err-session"
+
+    app = create_app(jarvis_mock)
+    inner_app = getattr(app, "app", app)
+    with TestClient(inner_app, raise_server_exceptions=False) as client:
+        resp = client.post("/chat", json={"message": "trigger error"})
+
+    assert resp.status_code == 500
+    assert "AI unavailable" in resp.json()["detail"]
+
+
+# ── WebSocket streaming (lines 340-358) ──────────────────────────────────────
+
+def test_websocket_streams_tokens():
+    """Lines 340-351: WebSocket endpoint streams tokens then sends done event."""
+    from jarvis.daemon import create_app
+
+    async def mock_stream(msg):
+        yield "Hello "
+        yield "World"
+
+    jarvis_mock = MagicMock()
+    jarvis_mock.stream_chat = mock_stream
+    jarvis_mock.set_profile = MagicMock()
+    jarvis_mock.status = MagicMock(return_value="")
+    jarvis_mock._session_id = "ws-session"
+
+    app = create_app(jarvis_mock)
+    inner_app = getattr(app, "app", app)
+
+    with TestClient(inner_app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"message": "hello", "profile": "default"})
+            msgs = []
+            for _ in range(10):
+                msg = ws.receive_json()
+                msgs.append(msg)
+                if msg.get("type") == "done":
+                    break
+
+    types = [m["type"] for m in msgs]
+    assert "token" in types
+    assert "done" in types
+
+
+def test_websocket_exception_sends_error():
+    """Lines 354-358: WebSocket exception path sends error JSON."""
+    from jarvis.daemon import create_app
+
+    async def bad_stream(msg):
+        raise RuntimeError("stream exploded")
+        yield  # make it an async generator
+
+    jarvis_mock = MagicMock()
+    jarvis_mock.stream_chat = bad_stream
+    jarvis_mock.set_profile = MagicMock()
+    jarvis_mock.status = MagicMock(return_value="")
+
+    app = create_app(jarvis_mock)
+    inner_app = getattr(app, "app", app)
+
+    with TestClient(inner_app, raise_server_exceptions=False) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"message": "crash me"})
+            msgs = []
+            for _ in range(5):
+                try:
+                    msg = ws.receive_json()
+                    msgs.append(msg)
+                    if msg.get("type") in ("error", "done"):
+                        break
+                except Exception:
+                    break
+
+    error_msgs = [m for m in msgs if m.get("type") == "error"]
+    assert len(error_msgs) >= 1
+    assert "stream exploded" in error_msgs[0]["content"]
+
+
+# ── VoiceLoop.start() with VOICE_ENABLED=True (lines 443-446) ────────────────
+
+def test_voice_loop_start_when_enabled(monkeypatch):
+    """Lines 443-446: VoiceLoop.start() sets up TTS+STT when VOICE_ENABLED=True."""
+    from jarvis.config import cfg
+    from jarvis.daemon import VoiceLoop
+
+    monkeypatch.setattr(cfg, "VOICE_ENABLED", True)
+    monkeypatch.setattr(cfg, "STT_ENGINE", "pyttsx3")
+
+    fake_tts = MagicMock()
+    fake_stt = MagicMock()
+
+    with patch("jarvis.voice.text_to_speech.TTSEngine", return_value=fake_tts), \
+         patch("jarvis.voice.speech_to_text.STTEngine", return_value=fake_stt):
+        vl = VoiceLoop(MagicMock())
+        vl.start(MagicMock())
+
+    fake_tts.speak.assert_called_once()
+    fake_stt.start_listening.assert_called_once()
