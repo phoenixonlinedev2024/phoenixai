@@ -757,6 +757,160 @@ async def test_singularity_run_exception(monkeypatch):
     assert "singularity" in result.stderr
 
 
+# ── LocalSandbox exception paths (lines 48-49, 73-76) ───────────────────────
+
+@pytest.mark.asyncio
+async def test_local_run_generic_exception():
+    """Lines 48-49: exception other than TimeoutError in run() returns error ExecResult."""
+    sb = LocalSandbox()
+    with patch("asyncio.create_subprocess_shell", AsyncMock(side_effect=OSError("permission denied"))):
+        result = await sb.run("echo hi")
+    assert result.exit_code == 1
+    assert "permission denied" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_local_run_code_timeout():
+    """Line 73-74: asyncio.TimeoutError in run_code() returns timed_out ExecResult."""
+    import asyncio as _asyncio
+    sb = LocalSandbox()
+    fake_proc = MagicMock()
+
+    async def _never_finishes():
+        await _asyncio.sleep(999)
+        return (b"", b"")
+
+    fake_proc.communicate = _never_finishes
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        result = await sb.run_code("print('hi')", language="python", timeout=0.01)
+    assert result.timed_out is True
+    assert result.exit_code == -1
+
+
+@pytest.mark.asyncio
+async def test_local_run_code_generic_exception():
+    """Lines 75-76: generic exception in run_code() returns error ExecResult."""
+    sb = LocalSandbox()
+    with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=OSError("no node binary"))):
+        result = await sb.run_code("console.log('hi')", language="javascript")
+    assert result.exit_code == 1
+    assert "no node binary" in result.stderr
+
+
+# ── DockerSandbox uncovered lines ─────────────────────────────────────────────
+
+def test_docker_get_client_initializes_from_env():
+    """Line 42: _get_client() calls docker.from_env() when no client yet."""
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    sb = DockerSandbox()
+    sb._client = None
+    fake_docker = MagicMock()
+    fake_client = MagicMock()
+    fake_docker.from_env.return_value = fake_client
+    with patch.dict(sys.modules, {"docker": fake_docker}):
+        result = sb._get_client()
+    assert result is fake_client
+    fake_docker.from_env.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_docker_run_delegates_to_run_sync():
+    """Line 56: run() executes _run_sync via thread executor."""
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    from jarvis.sandbox.base import ExecResult
+    sb = DockerSandbox()
+    expected = ExecResult(stdout="container output", exit_code=0)
+    with patch.object(sb, "_run_sync", return_value=expected):
+        result = await sb.run("echo hi", timeout=5)
+    assert result.stdout == "container output"
+
+
+@pytest.mark.asyncio
+async def test_docker_run_code_python_success():
+    """Lines 73-85: run_code() creates tempfile, calls _run_sync, cleans up."""
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    from jarvis.sandbox.base import ExecResult
+    sb = DockerSandbox()
+    expected = ExecResult(stdout="hello\n", exit_code=0)
+    with patch.object(sb, "_run_sync", return_value=expected):
+        result = await sb.run_code("print('hello')", language="python", timeout=5)
+    assert result.stdout == "hello\n"
+    assert result.exit_code == 0
+
+
+def test_docker_run_sync_exit_status_exception():
+    """Line 113: exception message with 'exit status' goes through that branch."""
+    from jarvis.sandbox.docker_sandbox import DockerSandbox
+    sb = DockerSandbox()
+    fake_client = MagicMock()
+    fake_client.containers.run = MagicMock(side_effect=RuntimeError("non-zero exit status 127"))
+    sb._client = fake_client
+    result = sb._run_sync(["bad_cmd"], timeout=5, workdir="/tmp", volumes=None)
+    assert result.exit_code == 1
+    assert "non-zero exit status 127" in result.stderr
+    assert "Docker error:" not in result.stderr
+
+
+# ── SandboxRouter _build_backends exception swallowing ───────────────────────
+
+def test_router_build_backends_swallows_docker_exception(monkeypatch):
+    """Lines 31-32: RuntimeError from DockerSandbox() is silently swallowed."""
+    import jarvis.sandbox.docker_sandbox as dmod
+
+    class _RaisingDocker:
+        def __init__(self): raise RuntimeError("docker unavailable")
+
+    monkeypatch.setattr(dmod, "DockerSandbox", _RaisingDocker)
+    monkeypatch.setattr("jarvis.sandbox.router.cfg.SSH_HOST", "")
+    from jarvis.sandbox.router import SandboxRouter
+    router = SandboxRouter()
+    assert "docker" not in router._backends
+    assert "local" in router._backends
+
+
+def test_router_build_backends_swallows_ssh_exception(monkeypatch):
+    """Lines 38-39: RuntimeError from SSHSandbox() is silently swallowed."""
+    import jarvis.sandbox.ssh_sandbox as smod
+
+    class _RaisingSSH:
+        def __init__(self): raise RuntimeError("ssh unavailable")
+
+    monkeypatch.setattr(smod, "SSHSandbox", _RaisingSSH)
+    monkeypatch.setattr("jarvis.sandbox.router.cfg.SSH_HOST", "host.example.com")
+    from jarvis.sandbox.router import SandboxRouter
+    router = SandboxRouter()
+    assert "ssh" not in router._backends
+
+
+def test_router_build_backends_swallows_modal_exception(monkeypatch):
+    """Lines 44-45: RuntimeError from ModalSandbox() is silently swallowed."""
+    import jarvis.sandbox.modal_sandbox as mmod
+
+    class _RaisingModal:
+        def __init__(self): raise RuntimeError("modal unavailable")
+
+    original_singularity = mmod.SingularitySandbox
+    monkeypatch.setattr(mmod, "ModalSandbox", _RaisingModal)
+    monkeypatch.setattr("jarvis.sandbox.router.cfg.SSH_HOST", "")
+    from jarvis.sandbox.router import SandboxRouter
+    router = SandboxRouter()
+    assert "modal" not in router._backends
+
+
+def test_router_build_backends_swallows_singularity_exception(monkeypatch):
+    """Lines 50-51: RuntimeError from SingularitySandbox() is silently swallowed."""
+    import jarvis.sandbox.modal_sandbox as mmod
+
+    class _RaisingSingularity:
+        def __init__(self): raise RuntimeError("singularity unavailable")
+
+    monkeypatch.setattr(mmod, "SingularitySandbox", _RaisingSingularity)
+    monkeypatch.setattr("jarvis.sandbox.router.cfg.SSH_HOST", "")
+    from jarvis.sandbox.router import SandboxRouter
+    router = SandboxRouter()
+    assert "singularity" not in router._backends
+
+
 # ── SandboxRouter _build_backends and get_backend fallback ───────────────────
 
 def test_router_build_backends_includes_modal_and_singularity(monkeypatch):
