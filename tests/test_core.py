@@ -569,3 +569,109 @@ async def test_execute_tool_async_function(jarvis_instance):
     ))
     result = await jarvis_instance._execute_tool("async_echo", {"x": "hello"})
     assert result == "async:hello"
+
+
+@pytest.mark.asyncio
+async def test_execute_tools_parallel_gather_exception(jarvis_instance):
+    """Line 283: Exception from gather is converted to 'Tool error:' string."""
+    async def _always_raise(name, inputs):
+        raise RuntimeError("task exploded")
+
+    jarvis_instance._execute_tool = _always_raise
+    calls = [{"id": "x1", "name": "any", "input": {}}]
+    results = await jarvis_instance._execute_tools_parallel(calls)
+    assert "Tool error" in results[0]["content"]
+    assert "task exploded" in results[0]["content"]
+
+
+# ── Jarvis.__init__ coverage for lines 62-63 and 68 ──────────────────────────
+
+def test_init_subagent_tools_exception_swallowed(tmp_data_dir, monkeypatch, capsys):
+    """Lines 62-63: subagent tools failure during init is printed and swallowed."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-placeholder")
+    monkeypatch.setattr("jarvis.config.cfg.TRAJECTORY_COLLECTION", False)
+
+    import jarvis.tools.subagent_tools as submod
+    with patch("jarvis.core.PluginLoader") as MockLoader, \
+         patch.object(submod, "register_tools", side_effect=RuntimeError("no agents")):
+        MockLoader.return_value.load_all.return_value = 0
+        MockLoader.return_value.start_hot_reload.return_value = None
+        from jarvis.core import Jarvis
+        j = Jarvis()
+    out = capsys.readouterr().out
+    assert "Subagent tools unavailable" in out
+    assert j is not None
+
+
+def test_init_prints_plugin_count_when_nonzero(tmp_data_dir, monkeypatch, capsys):
+    """Line 68: 'Loaded N plugin(s).' is printed when load_all() returns > 0."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-placeholder")
+    monkeypatch.setattr("jarvis.config.cfg.TRAJECTORY_COLLECTION", False)
+
+    with patch("jarvis.core.PluginLoader") as MockLoader:
+        MockLoader.return_value.load_all.return_value = 3
+        MockLoader.return_value.start_hot_reload.return_value = None
+        from jarvis.core import Jarvis
+        j = Jarvis()
+    out = capsys.readouterr().out
+    assert "Loaded 3 plugin(s)." in out
+    assert j is not None
+
+
+# ── _stream_agent_loop malformed JSON input_raw (lines 257-258) ──────────────
+
+@pytest.mark.asyncio
+async def test_stream_agent_loop_malformed_tool_json(jarvis_instance):
+    """Lines 257-258: bad JSON in tool input_raw falls back to empty dict."""
+    StartEvent = type("RawContentBlockStartEvent", (), {})
+    StopEvent = type("RawContentBlockStopEvent", (), {})
+    TextDeltaEvent = type("RawContentBlockDeltaEvent", (), {})
+
+    def make_start_event():
+        evt = StartEvent()
+        block = MagicMock()
+        block.type = "tool_use"
+        block.id = "t1"
+        block.name = "echo"
+        evt.content_block = block
+        return evt
+
+    def make_delta_event(partial_json):
+        evt = TextDeltaEvent()
+        evt.delta = MagicMock()
+        evt.delta.text = None
+        evt.delta.partial_json = partial_json
+        return evt
+
+    def make_stop_event():
+        return StopEvent()
+
+    class FakeStreamCtx:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield make_start_event()
+            yield make_delta_event("{INVALID JSON")
+            yield make_stop_event()
+
+        async def get_final_message(self):
+            final_msg = MagicMock()
+            final_msg.content = []
+            return final_msg
+
+    jarvis_instance.client.messages.stream = MagicMock(return_value=FakeStreamCtx())
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+    jarvis_instance.semantic.store_conversation_snippet = MagicMock()
+
+    tokens = []
+    async for token in jarvis_instance.stream_chat("trigger malformed json"):
+        tokens.append(token)
+    # No exception raised — malformed JSON was swallowed and input defaulted to {}
