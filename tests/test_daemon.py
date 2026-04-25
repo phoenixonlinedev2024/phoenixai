@@ -366,3 +366,45 @@ def test_voice_loop_start_when_enabled(monkeypatch):
 
     fake_tts.speak.assert_called_once()
     fake_stt.start_listening.assert_called_once()
+
+
+# ── WebSocket inner error handler silent pass (lines 357-358) ────────────────
+
+@pytest.mark.asyncio
+async def test_websocket_send_error_itself_raises_is_silently_ignored():
+    """Lines 357-358: silent pass when ws.send_json raises inside the error handler."""
+    from jarvis.daemon import create_app
+
+    async def bad_stream(msg):
+        raise RuntimeError("outer crash")
+        yield  # make it an async generator
+
+    jarvis_mock = MagicMock()
+    jarvis_mock.stream_chat = bad_stream
+    jarvis_mock.set_profile = MagicMock()
+
+    app = create_app(jarvis_mock)
+    inner_app = getattr(app, "app", app)
+
+    # Find the /ws websocket route handler
+    ws_route = next(r for r in inner_app.routes if getattr(r, "path", None) == "/ws")
+
+    # Build a minimal mock WebSocket
+    ws_mock = AsyncMock()
+    ws_mock.accept = AsyncMock()
+    ws_mock.receive_json = AsyncMock(return_value={"message": "hello", "profile": "default"})
+
+    send_calls: list = []
+
+    async def send_json_that_raises(data):
+        send_calls.append(data)
+        if data.get("type") == "error":
+            raise RuntimeError("network gone, cannot send error frame")
+
+    ws_mock.send_json = send_json_that_raises
+
+    # Call the handler directly — must not raise
+    await ws_route.endpoint(ws_mock)
+
+    # The error send was attempted
+    assert any(d.get("type") == "error" for d in send_calls)
