@@ -172,3 +172,26 @@ async def test_ab_test_error_defaults_to_a():
     winner, result = await planner.ab_test("task", "a", "b")
     assert winner == "A"
     assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_score_confidence_strips_code_fence():
+    """Line 79: backtick-fenced response is unwrapped in score_confidence."""
+    fenced = '```json\n{"score": 0.85, "reason": "good"}\n```'
+    client = _fake_client_returning(fenced)
+    planner = TaskPlanner(client=client, memory=MagicMock())
+    score = await planner.score_confidence("task", "response")
+    assert score == 0.85
+
+
+@pytest.mark.asyncio
+async def test_ab_test_strips_code_fence():
+    """Line 102: backtick-fenced response is unwrapped in ab_test."""
+    payload = '{"winner":"A","score_a":0.9,"score_b":0.5,"reason":"A is better"}'
+    fenced = f"```json\n{payload}\n```"
+    client = _fake_client_returning(fenced)
+    mem = _fake_memory()
+    planner = TaskPlanner(client=client, memory=mem)
+    winner, result = await planner.ab_test("task", "ans A", "ans B")
+    assert winner == "A"
+    assert result["score_a"] == 0.9

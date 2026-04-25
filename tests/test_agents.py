@@ -446,3 +446,18 @@ async def test_subagent_run_reaches_max_turns():
 
     assert "max turns" in result.lower()
     assert parent.client.messages.create.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_process_messages_no_handler_sets_error():
+    """Line 84: response.error set when no handler is registered for the method."""
+    import asyncio
+    bus = AgentRPC()
+    bus.register("worker")
+    msg = RPCMessage(method="unknown_method", params={})
+
+    await bus._queues["worker"].put(msg)
+    worker = asyncio.create_task(bus.process_messages("worker"))
+    await asyncio.sleep(0.05)
+    worker.cancel()
+    assert bus._queues["worker"].empty()

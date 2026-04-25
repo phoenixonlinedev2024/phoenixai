@@ -85,6 +85,12 @@ def test_validate_cron_wildcard_passes():
     assert "Valid" in _validate_cron("* * * * *")
 
 
+def test_validate_cron_non_numeric_field_passes():
+    """Lines 65-66: ValueError is swallowed for non-numeric cron field values."""
+    out = _validate_cron("abc 0 * * *")
+    assert "Valid cron" in out or "Cron issues" in out
+
+
 def test_nlp_cron_register_tools():
     from jarvis.tools.nlp_cron import register_tools
     from jarvis.tools.registry import ToolRegistry
@@ -257,6 +263,44 @@ def test_subagent_tools_register_tools():
     names = {t.name for t in reg.all()}
     assert "delegate_task" in names
     assert "delegate_parallel" in names
+
+
+def test_get_pool_creates_pool_with_jarvis(monkeypatch):
+    """Lines 18-19: _get_pool initialises pool when jarvis is provided."""
+    _submod._pool = None
+    fake_pool_instance = MagicMock()
+    fake_pool_cls = MagicMock(return_value=fake_pool_instance)
+    monkeypatch.setattr("jarvis.agents.subagent.SubagentPool", fake_pool_cls)
+    import jarvis.tools.subagent_tools as submod2
+    submod2._pool = None
+    fake_jarvis = MagicMock()
+    pool = submod2._get_pool(jarvis=fake_jarvis)
+    assert pool is fake_pool_instance
+    submod2._pool = None
+
+
+def test_delegate_exception_returns_error(monkeypatch):
+    """Lines 30-31: _delegate returns error string when pool.dispatch_one raises."""
+    fake_pool = MagicMock()
+    _submod._pool = fake_pool
+    monkeypatch.setattr("jarvis.tools.subagent_tools.asyncio.run",
+                        MagicMock(side_effect=RuntimeError("agent crashed")))
+    out = _submod._delegate("task")
+    assert "Subagent error" in out
+    assert "agent crashed" in out
+    _submod._pool = None
+
+
+def test_delegate_parallel_exception_returns_error(monkeypatch):
+    """Lines 44-45: _delegate_parallel returns error string when dispatch raises."""
+    fake_pool = MagicMock()
+    _submod._pool = fake_pool
+    monkeypatch.setattr("jarvis.tools.subagent_tools.asyncio.run",
+                        MagicMock(side_effect=RuntimeError("parallel crash")))
+    out = _submod._delegate_parallel([{"goal": "g"}])
+    assert "Parallel subagent error" in out
+    assert "parallel crash" in out
+    _submod._pool = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════

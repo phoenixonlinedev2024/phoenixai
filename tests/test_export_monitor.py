@@ -353,3 +353,23 @@ def test_notify_prints_when_plyer_raises(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Alert" in out
     assert "Something happened" in out
+
+
+@pytest.mark.asyncio
+async def test_monitor_start_runs_loop(capsys):
+    """Lines 22-26: start() sets _running, prints, then loops until stop() is called."""
+    import asyncio as _asyncio
+    mon = ProactiveMonitor(_make_jarvis_mock())
+
+    async def _stop_after_one_tick():
+        await _asyncio.sleep(0.05)
+        mon.stop()
+
+    await _asyncio.gather(
+        mon.start(interval_seconds=0),
+        _stop_after_one_tick(),
+        return_exceptions=True,
+    )
+    out = capsys.readouterr().out
+    assert "Started" in out
+    assert mon._running is False

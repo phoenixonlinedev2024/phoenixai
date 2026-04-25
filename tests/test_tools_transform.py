@@ -178,3 +178,25 @@ def test_transform_tools_register():
     names = {t.name for t in reg.all()}
     assert {"jq_query", "yaml_to_json", "json_to_yaml", "validate_json",
             "regex_test", "text_diff", "file_diff"} <= names
+
+
+def test_jq_query_using_jq_lib():
+    """Line 23: jq library path runs when the jq module is available."""
+    from jarvis.tools.transform_tools import _jq_query
+    fake_jq = MagicMock()
+    fake_jq.first = MagicMock(return_value="Tony")
+    data = '{"user": {"name": "Tony"}}'
+    with patch("subprocess.run", side_effect=FileNotFoundError), \
+         patch.dict(sys.modules, {"jq": fake_jq}):
+        result = _jq_query(data, ".user.name")
+    assert "Tony" in result
+
+
+def test_jq_query_empty_parts_skipped():
+    """Line 32: continue skips empty path segments from double-dot queries."""
+    from jarvis.tools.transform_tools import _jq_query
+    data = '{"a": {"b": "found_it"}}'
+    with patch("subprocess.run", side_effect=FileNotFoundError), \
+         patch.dict(sys.modules, {"jq": None}):
+        result = _jq_query(data, ".a..b")
+    assert "found_it" in result

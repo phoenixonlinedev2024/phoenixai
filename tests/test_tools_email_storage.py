@@ -166,6 +166,37 @@ def test_read_emails_unread_only_criteria(monkeypatch):
     assert criteria == "UNSEEN"
 
 
+def test_read_emails_multipart(monkeypatch):
+    """Lines 62-65: multipart email body extraction."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "EMAIL_ADDRESS", "me@example.com")
+    monkeypatch.setattr(cfg, "EMAIL_PASSWORD", "secret")
+
+    raw_msg = (
+        b"MIME-Version: 1.0\r\n"
+        b"From: bob@example.com\r\n"
+        b"Subject: Multi\r\n"
+        b"Date: Mon, 1 Jan 2024 10:00:00 +0000\r\n"
+        b'Content-Type: multipart/mixed; boundary="b"\r\n\r\n'
+        b"--b\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"Multipart body text here.\r\n"
+        b"--b--\r\n"
+    )
+
+    mail = MagicMock()
+    mail.search = MagicMock(return_value=("OK", [b"1"]))
+    mail.fetch = MagicMock(return_value=("OK", [(b"1 (RFC822)", raw_msg)]))
+    ctx = MagicMock()
+    ctx.__enter__ = MagicMock(return_value=mail)
+    ctx.__exit__ = MagicMock(return_value=False)
+    with patch("jarvis.tools.email_tool.imaplib.IMAP4_SSL", return_value=ctx):
+        out = _read_emails(unread_only=False)
+
+    assert "bob@example.com" in out
+    assert "Multipart body text here." in out
+
+
 # ── email register_tools ──────────────────────────────────────────────────────
 
 def test_email_register_tools_populates_registry():
@@ -304,3 +335,22 @@ def test_storage_register_tools_populates_registry():
     assert registry.get("s3_upload") is not None
     assert registry.get("s3_download") is not None
     assert registry.get("s3_delete") is not None
+
+
+def test_get_s3_with_endpoint_url(monkeypatch):
+    """Lines 21-23: endpoint_url is added to kwargs when S3_ENDPOINT_URL is set."""
+    from jarvis.config import cfg
+    import jarvis.tools.storage_tools as st
+    monkeypatch.setattr(cfg, "S3_ENDPOINT_URL", "http://minio:9000")
+    monkeypatch.setattr(cfg, "S3_ACCESS_KEY", "key")
+    monkeypatch.setattr(cfg, "S3_SECRET_KEY", "secret")
+    monkeypatch.setattr(cfg, "S3_REGION", "us-east-1")
+
+    fake_boto3 = MagicMock()
+    fake_client = MagicMock()
+    fake_boto3.client = MagicMock(return_value=fake_client)
+    with patch.dict(sys.modules, {"boto3": fake_boto3}):
+        client = st._get_s3()
+    assert client is fake_client
+    _, kwargs = fake_boto3.client.call_args
+    assert kwargs.get("endpoint_url") == "http://minio:9000"

@@ -168,6 +168,38 @@ def test_git_branch_error():
     assert "Branch error" in out
 
 
+def test_git_clone_with_branch():
+    """Line 41: kwargs['branch'] is set when branch arg is provided."""
+    fake, repo = _fake_git()
+    with patch.dict(sys.modules, {"git": fake}):
+        out = _git_clone("https://github.com/org/repo.git", branch="develop")
+    assert "Cloned" in out
+    fake.Repo.clone_from.assert_called_once()
+    _, kwargs = fake.Repo.clone_from.call_args
+    assert kwargs.get("branch") == "develop"
+
+
+def test_git_diff_error():
+    """Lines 70-71: Diff error path when git.Repo raises."""
+    fake = MagicMock()
+    fake.Repo.side_effect = RuntimeError("not a repo")
+    with patch.dict(sys.modules, {"git": fake}):
+        out = _git_diff(".")
+    assert "Diff error" in out
+
+
+def test_git_branch_checkout_existing():
+    """Lines 82-83: checkout=True for an existing branch name."""
+    fake, repo = _fake_git()
+    b = MagicMock()
+    b.name = "main"
+    repo.branches = [b]
+    with patch.dict(sys.modules, {"git": fake}):
+        out = _git_branch(".", name="main", checkout=True)
+    assert "Switched to branch: main" in out
+    repo.git.checkout.assert_called_once_with("main")
+
+
 def test_git_tools_register():
     from jarvis.tools.git_tools import register_tools
     from jarvis.tools.registry import ToolRegistry
@@ -437,6 +469,15 @@ def _make_fake_pdfplumber(text="page text", tables=None, metadata=None):
     return fake_plumber, fake_pdf, fake_page
 
 
+def test_read_pdf_runtime_exception():
+    """Lines 23-24: PDF read error when pdfplumber raises a non-import exception."""
+    fake_plumber = MagicMock()
+    fake_plumber.open.side_effect = RuntimeError("corrupt pdf file")
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _read_pdf("/tmp/doc.pdf")
+    assert "PDF read error" in out
+
+
 def test_read_pdf_success():
     fake_plumber, _, _ = _make_fake_pdfplumber(text="Hello PDF")
     with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
@@ -520,3 +561,10 @@ def test_db_schema_with_table():
         c.execute(text("CREATE TABLE myinfo (id INTEGER PRIMARY KEY, name TEXT)"))
     out = _db_schema(url, table="myinfo")
     assert "myinfo" in out or "Schema error" in out
+
+
+def test_db_schema_error():
+    """Lines 40-41: _db_schema exception path returns 'Schema error'."""
+    from jarvis.tools.database_tools import _db_schema
+    out = _db_schema("not-a-valid-url://???", table="t")
+    assert "Schema error" in out or "error" in out.lower()

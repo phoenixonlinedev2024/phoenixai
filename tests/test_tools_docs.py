@@ -6,7 +6,7 @@ import csv
 import json
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -171,3 +171,26 @@ def test_spreadsheet_tools_register():
     assert registry.get("read_spreadsheet") is not None
     assert registry.get("write_spreadsheet") is not None
     assert registry.get("list_sheets") is not None
+
+
+def test_read_spreadsheet_xlsx_max_rows_break(monkeypatch):
+    """Line 23: break fires when xlsx has more rows than max_rows."""
+    import json
+    fake_row1 = (1, 2, 3)
+    fake_row2 = (4, 5, 6)
+    fake_row3 = (7, 8, 9)
+
+    fake_ws = MagicMock()
+    fake_ws.iter_rows = MagicMock(return_value=iter([fake_row1, fake_row2, fake_row3]))
+
+    fake_wb = MagicMock()
+    fake_wb.active = fake_ws
+
+    fake_openpyxl = MagicMock()
+    fake_openpyxl.load_workbook = MagicMock(return_value=fake_wb)
+
+    with patch.dict(sys.modules, {"openpyxl": fake_openpyxl}):
+        result = _read_spreadsheet("dummy.xlsx", max_rows=2)
+
+    rows = json.loads(result)
+    assert len(rows) == 2

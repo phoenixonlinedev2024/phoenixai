@@ -178,3 +178,39 @@ async def test_auto_create_on_error_returns_none(registry):
     client.messages.create = AsyncMock(side_effect=RuntimeError("api down"))
     skill = await registry.auto_create("some task", client)
     assert skill is None
+
+
+@pytest.mark.asyncio
+async def test_auto_create_strips_backtick_fence(registry):
+    """Line 94: raw.split('```')[1] branch when response starts with backticks."""
+    payload = '{"name":"fenced","description":"d","tags":[],"system_prompt":"sp"}'
+    fenced = f"```json\n{payload}\n```"
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=MagicMock(
+        content=[MagicMock(text=fenced)]
+    ))
+    skill = await registry.auto_create("do fenced thing", client)
+    assert skill is not None
+    assert skill.name == "fenced"
+
+
+def test_save_swallows_exception(tmp_path, monkeypatch):
+    """Lines 109-110: _save() passes silently when the file cannot be written."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    r = SkillRegistry()
+    r.register(Skill(name="s1", description="d", system_prompt="sp", created_by="generated"))
+    blocker = tmp_path / "blocker"
+    blocker.write_text("I am a file, not a directory")
+    r._persist_path = blocker / "skills.json"
+    r._save()  # should not raise despite mkdir failing
+
+
+def test_load_swallows_corrupt_json(tmp_path, monkeypatch):
+    """Lines 119-120: _load() passes silently when the persisted file is corrupt."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    persist = tmp_path / "skills.json"
+    persist.write_text("NOT VALID JSON")
+    r = SkillRegistry()
+    assert r.all() == []

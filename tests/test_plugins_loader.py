@@ -131,3 +131,30 @@ def test_hot_reload_reloads_modified_plugin(loader, tmp_path, registry):
     # Drive the reload directly (same code the watcher calls)
     loader._load_plugin(plugin)
     assert registry.version == 2
+
+
+def test_watch_loop_reloads_changed_plugin(loader, tmp_path, registry):
+    """Lines 76-78: _watch_loop reloads a plugin when its mtime increases."""
+    import os
+    import time
+
+    plugin = tmp_path / "evolving.py"
+    plugin.write_text("def register_tools(registry):\n    registry.watch_v = 1\n")
+    loader.load_all()
+    assert registry.watch_v == 1
+
+    old_mtime = loader._mtimes[str(plugin)]
+    plugin.write_text("def register_tools(registry):\n    registry.watch_v = 2\n")
+    new_mtime = old_mtime + 2
+    os.utime(plugin, (new_mtime, new_mtime))
+
+    loader.start_hot_reload(interval=0.02)
+    try:
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if getattr(registry, "watch_v", 1) == 2:
+                break
+            time.sleep(0.05)
+        assert getattr(registry, "watch_v", 1) == 2
+    finally:
+        loader.stop_hot_reload()

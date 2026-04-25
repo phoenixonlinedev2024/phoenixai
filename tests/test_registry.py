@@ -449,3 +449,94 @@ def test_run_shell_exception():
     with patch("jarvis.tools.registry.subprocess.run", side_effect=OSError("no shell")):
         out = _run_shell("impossible")
     assert "Shell error" in out
+
+
+def test_run_shell_captures_stderr():
+    """Line 161: STDERR branch in _run_shell is exercised by a command writing to stderr."""
+    out = _run_shell("echo 'err msg' >&2")
+    assert "STDERR" in out
+    assert "err msg" in out
+
+
+def test_web_fetch_decomposes_nav_tags():
+    """Line 111: tag.decompose() runs when HTML contains nav/script/aside tags."""
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.text = "<html><nav>junk</nav><p>content</p></html>"
+    fake_requests = MagicMock()
+    fake_requests.get = MagicMock(return_value=fake_resp)
+
+    fake_tag = MagicMock()
+
+    class FakeSoup:
+        def __init__(self, text, parser):
+            pass
+
+        def __call__(self, tags):
+            return [fake_tag]
+
+        def get_text(self, separator="\n", strip=False):
+            return "content"
+
+    fake_bs4 = MagicMock()
+    fake_bs4.BeautifulSoup = FakeSoup
+
+    with patch.dict(sys.modules, {"requests": fake_requests, "bs4": fake_bs4}):
+        out = _web_fetch("https://example.com")
+    assert "content" in out
+    fake_tag.decompose.assert_called_once()
+
+
+def test_write_file_error(tmp_path):
+    """Lines 131-132: Write error path when the target path cannot be written."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("I am a file")
+    out = _write_file(str(blocker / "subfile.txt"), "content")
+    assert "Write error" in out
+
+
+def test_execute_python_exception():
+    """Lines 189-190: Execution error when subprocess.run raises an OS-level error."""
+    import subprocess
+    with patch("jarvis.tools.registry.subprocess.run", side_effect=OSError("no interpreter")):
+        out = _execute_python("print(1)")
+    assert "Execution error" in out
+
+
+def test_write_and_run_code_stderr_only():
+    """Line 264: Error/stderr branch in _write_and_run_code when code writes to stderr."""
+    out = _write_and_run_code("python", "import sys; sys.stderr.write('oops\\n')")
+    assert "oops" in out
+
+
+def test_write_and_run_code_exception():
+    """Lines 268-269: Generic exception path in _write_and_run_code."""
+    import subprocess
+    with patch("jarvis.tools.registry.subprocess.run", side_effect=OSError("runner gone")):
+        out = _write_and_run_code("python", "print(1)")
+    assert "Error" in out
+
+
+def test_build_registry_swallows_tool_module_exceptions(capsys):
+    """Lines 431-468: build_registry continues even when optional tool modules fail."""
+    import jarvis.tools.browser as browser_mod
+    import jarvis.tools.email_tool as email_mod
+    import jarvis.tools.github_tool as github_mod
+    import jarvis.tools.package_installer as pkg_mod
+    import jarvis.tools.image_gen as image_mod
+    import jarvis.tools.nlp_cron as nlp_mod
+    import jarvis.tools.sandbox_tools as sandbox_mod
+
+    boom = MagicMock(side_effect=RuntimeError("unavailable"))
+    with patch.object(browser_mod, "register_tools", boom), \
+         patch.object(email_mod, "register_tools", boom), \
+         patch.object(github_mod, "register_tools", boom), \
+         patch.object(pkg_mod, "register_tools", boom), \
+         patch.object(image_mod, "register_tools", boom), \
+         patch.object(nlp_mod, "register_tools", boom), \
+         patch.object(sandbox_mod, "register_tools", boom):
+        from jarvis.tools.registry import build_registry
+        reg = build_registry()
+    assert reg is not None
+    out = capsys.readouterr().out
+    assert "unavailable" in out

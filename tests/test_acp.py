@@ -212,3 +212,11 @@ async def test_publish_sync_enqueues_in_running_loop(bus):
     await _drive()
     assert len(received) == 1
     assert received[0].payload == "fire"
+
+
+def test_publish_sync_no_running_loop_is_silent(bus):
+    """Lines 63-64: publish_sync swallows RuntimeError when no event loop is running."""
+    from unittest.mock import patch
+    with patch("asyncio.get_running_loop", side_effect=RuntimeError("no running loop")):
+        bus.publish_sync("no_loop_topic", payload="ignored")
+    # No exception raised — test passes if we reach here

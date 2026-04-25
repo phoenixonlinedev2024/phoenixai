@@ -345,6 +345,21 @@ def test_get_weather_api_error():
     assert "Weather error" in out
 
 
+def test_get_weather_empty_daily():
+    """Line 43: returns 'Weather data unavailable.' when daily dict is empty."""
+    fake_requests = MagicMock()
+    geo_resp = MagicMock()
+    geo_resp.json = MagicMock(return_value=[
+        {"display_name": "Test City", "lat": "10.0", "lon": "20.0"},
+    ])
+    weather_resp = MagicMock()
+    weather_resp.json = MagicMock(return_value={"daily": {}})
+    fake_requests.get = MagicMock(side_effect=[geo_resp, weather_resp])
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        out = _get_weather("Test City")
+    assert out == "Weather data unavailable."
+
+
 # ── _read_rss ─────────────────────────────────────────────────────────────────
 
 def test_read_rss_with_feedparser():
@@ -369,6 +384,41 @@ def test_read_rss_empty():
     with patch.dict(sys.modules, {"feedparser": fake_feedparser}):
         out = _read_rss("http://nothing")
     assert "No entries" in out
+
+
+def test_read_rss_feedparser_missing_fallback_success():
+    """Lines 66-78: fallback XML parsing when feedparser is not installed."""
+    rss_xml = (
+        '<?xml version="1.0"?><rss version="2.0"><channel>'
+        '<title>Test</title>'
+        '<item><title>Article One</title><link>http://example.com/1</link></item>'
+        '</channel></rss>'
+    )
+    fake_requests = MagicMock()
+    fake_resp = MagicMock()
+    fake_resp.text = rss_xml
+    fake_requests.get = MagicMock(return_value=fake_resp)
+    with patch.dict(sys.modules, {"feedparser": None, "requests": fake_requests}):
+        out = _read_rss("http://example.com/feed")
+    assert "Article One" in out
+
+
+def test_read_rss_feedparser_missing_fallback_error():
+    """Lines 79-80: fallback exception path when requests also fails."""
+    fake_requests = MagicMock()
+    fake_requests.get = MagicMock(side_effect=RuntimeError("network down"))
+    with patch.dict(sys.modules, {"feedparser": None, "requests": fake_requests}):
+        out = _read_rss("http://example.com/feed")
+    assert "RSS error" in out
+
+
+def test_read_rss_feedparser_parse_exception():
+    """Lines 81-82: outer except catches errors from feedparser.parse() itself."""
+    fake_feedparser = MagicMock()
+    fake_feedparser.parse = MagicMock(side_effect=RuntimeError("feedparser crashed"))
+    with patch.dict(sys.modules, {"feedparser": fake_feedparser}):
+        out = _read_rss("http://bad.example")
+    assert "RSS error" in out
 
 
 # ── _ocr_image ────────────────────────────────────────────────────────────────

@@ -68,6 +68,15 @@ def test_browser_register_tools_populates_registry():
         assert registry.get(name) is not None
 
 
+def test_browser_fetch_non_import_exception():
+    """Lines 28-29: Browser fetch error when playwright raises a non-ImportError."""
+    fake_api = MagicMock()
+    fake_api.async_playwright.side_effect = RuntimeError("launch failed")
+    with patch.dict(sys.modules, {"playwright": MagicMock(), "playwright.async_api": fake_api}):
+        out = _browser_fetch("https://example.com")
+    assert "Browser fetch error" in out or "error" in out.lower()
+
+
 def _make_fake_playwright(content="page text"):
     """Build a minimal async playwright mock tree."""
     from unittest.mock import AsyncMock
@@ -203,6 +212,48 @@ def test_generate_image_local_missing_deps():
     with patch.dict(sys.modules, {"diffusers": None, "torch": None}):
         out = _generate_image_local("prompt")
     assert "not installed" in out.lower()
+
+
+def test_generate_image_local_success(tmp_path):
+    """Lines 37-45: local generation happy path via diffusers mock."""
+    fake_image = MagicMock()
+    fake_pipe = MagicMock()
+    fake_pipe.return_value.images = [fake_image]
+
+    pipeline_cls = MagicMock()
+    pipeline_cls.from_pretrained.return_value.to.return_value = fake_pipe
+
+    fake_diffusers = MagicMock()
+    fake_diffusers.StableDiffusionPipeline = pipeline_cls
+
+    fake_torch = MagicMock()
+    fake_torch.cuda.is_available.return_value = False
+    fake_torch.float32 = "float32"
+
+    out_path = str(tmp_path / "img.png")
+    with patch.dict(sys.modules, {"diffusers": fake_diffusers, "torch": fake_torch}):
+        out = _generate_image_local("a cat", output_path=out_path)
+
+    assert "saved to" in out
+    fake_image.save.assert_called_once_with(out_path)
+
+
+def test_generate_image_local_exception():
+    """Lines 48-49: generic exception path in local generation."""
+    pipeline_cls = MagicMock()
+    pipeline_cls.from_pretrained.side_effect = RuntimeError("CUDA out of memory")
+
+    fake_diffusers = MagicMock()
+    fake_diffusers.StableDiffusionPipeline = pipeline_cls
+
+    fake_torch = MagicMock()
+    fake_torch.cuda.is_available.return_value = False
+
+    with patch.dict(sys.modules, {"diffusers": fake_diffusers, "torch": fake_torch}):
+        out = _generate_image_local("a cat")
+
+    assert "Local image generation error" in out
+    assert "CUDA out of memory" in out
 
 
 # ── _describe_image / _analyze_image (anthropic-mocked) ───────────────────────

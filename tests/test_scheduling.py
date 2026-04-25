@@ -255,3 +255,19 @@ async def test_history_trims_to_200():
     await asyncio.sleep(0.1)
     worker.cancel()
     assert len(q._history) == 200
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_run_now_unreachable_path():
+    """Line 173: return 'Unreachable.' when max_retries < 0 makes the for-range empty."""
+    from jarvis.scheduling import NLScheduler
+    from unittest.mock import AsyncMock, MagicMock
+    fake_jarvis = MagicMock()
+    fake_jarvis.chat = AsyncMock(return_value="ok")
+    fake_jarvis.memory = MagicMock()
+    fake_jarvis.memory.add_scheduled_task = MagicMock()
+    sched = NLScheduler(fake_jarvis)
+    job = await sched.add("unreachable_test", "every hour", "ping", max_retries=0)
+    job.max_retries = -1
+    result = await sched.run_now(job.id)
+    assert result == "Unreachable."
