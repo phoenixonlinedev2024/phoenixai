@@ -426,6 +426,74 @@ async def test_modal_write_and_read_file(tmp_path):
     assert content == "modal content"
 
 
+def _make_passthrough_modal():
+    """Modal mock where @app.function is a no-op decorator (enables inner fn coverage)."""
+    mock_modal = MagicMock()
+    mock_app = MagicMock()
+    mock_modal.App.lookup.return_value = mock_app
+
+    def passthrough_decorator(**kwargs):
+        def decorator(fn):
+            fn.remote = fn
+            return fn
+        return decorator
+
+    mock_app.function = passthrough_decorator
+    return mock_modal
+
+
+@pytest.mark.asyncio
+async def test_modal_shell_inner_function_lines_42_44():
+    """Lines 42-44: _shell body executes subprocess when pass-through decorator is used."""
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+
+    mock_modal = _make_passthrough_modal()
+
+    fake_proc_result = MagicMock()
+    fake_proc_result.stdout = "hello\n"
+    fake_proc_result.stderr = ""
+    fake_proc_result.returncode = 0
+    fake_subprocess = MagicMock()
+    fake_subprocess.run = MagicMock(return_value=fake_proc_result)
+
+    with patch.dict(sys.modules, {"modal": mock_modal, "subprocess": fake_subprocess}):
+        sb = ModalSandbox()
+        result = await sb.run("echo hello")
+
+    assert result.stdout == "hello\n"
+    assert result.exit_code == 0
+    fake_subprocess.run.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_modal_exec_inner_function_lines_60_76_success():
+    """Lines 60-76: _exec body captures stdout/stderr from exec'd code."""
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+
+    mock_modal = _make_passthrough_modal()
+
+    with patch.dict(sys.modules, {"modal": mock_modal}):
+        sb = ModalSandbox()
+        result = await sb.run_code("x = 1 + 1")
+
+    assert result.exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_modal_exec_inner_function_exception_path():
+    """Lines 69-71: _exec captures exception traceback and returns exit_code=1."""
+    from jarvis.sandbox.modal_sandbox import ModalSandbox
+
+    mock_modal = _make_passthrough_modal()
+
+    with patch.dict(sys.modules, {"modal": mock_modal}):
+        sb = ModalSandbox()
+        result = await sb.run_code("raise ValueError('modal test error')")
+
+    assert result.exit_code == 1
+    assert "ValueError" in result.stderr
+
+
 # ── SingularitySandbox ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
