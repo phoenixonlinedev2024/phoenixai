@@ -173,3 +173,58 @@ def test_rate_limiter_window_expires():
     rl.is_allowed("x")
     # All old entries expired — should be allowed again
     assert rl.is_allowed("x") is True
+
+
+def test_rate_limiter_remaining_never_negative():
+    """remaining() returns 0 when over the limit, not a negative number."""
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(limit=3, window=60)
+    for _ in range(5):
+        rl.is_allowed("u")
+    assert rl.remaining("u") == 0
+
+
+def test_rate_limiter_reset_at_returns_future():
+    """reset_at() is always in the future (or now) when bucket has entries."""
+    import time
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(limit=10, window=60)
+    rl.is_allowed("u")
+    reset = rl.reset_at("u")
+    assert reset > time.time() - 1   # at least now - 1s
+
+
+def test_rate_limiter_reset_at_empty_bucket():
+    """reset_at() for an unknown client returns a future time."""
+    import time
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(limit=10, window=60)
+    reset = rl.reset_at("unknown_client")
+    assert reset >= time.time()
+
+
+def test_keystore_generate_multiple_keys_are_unique(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "k.json")
+    keys = {ks.generate(name=f"app{i}") for i in range(10)}
+    assert len(keys) == 10
+
+
+def test_keystore_validate_increments_calls_each_time(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "k.json")
+    raw = ks.generate(name="counter")
+    for _ in range(5):
+        ks.validate(raw)
+    api_key = ks.validate(raw)
+    assert api_key.calls == 6
+
+
+def test_keystore_list_keys_includes_all(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "k.json")
+    ks.generate(name="first")
+    ks.generate(name="second", role="admin")
+    keys = ks.list_keys()
+    names = {k["name"] for k in keys}
+    assert names == {"first", "second"}

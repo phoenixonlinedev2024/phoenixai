@@ -271,3 +271,88 @@ async def test_nl_scheduler_run_now_unreachable_path():
     job.max_retries = -1
     result = await sched.run_now(job.id)
     assert result == "Unreachable."
+
+
+# ── TaskQueue: verify CRITICAL beats HIGH beats NORMAL beats LOW ──────────────
+
+@pytest.mark.asyncio
+async def test_task_queue_priority_order():
+    """Tasks dequeued in CRITICAL→HIGH→NORMAL→LOW order regardless of enqueue order."""
+    from jarvis.scheduling import TaskQueue, Priority
+    queue = TaskQueue()
+    order: list[str] = []
+
+    async def make_fn(label):
+        async def fn():
+            order.append(label)
+        return fn
+
+    # Enqueue in reverse priority order to prove heap reorders them
+    await queue.enqueue(await make_fn("low"),      priority=Priority.LOW)
+    await queue.enqueue(await make_fn("normal"),   priority=Priority.NORMAL)
+    await queue.enqueue(await make_fn("critical"), priority=Priority.CRITICAL)
+    await queue.enqueue(await make_fn("high"),     priority=Priority.HIGH)
+
+    import asyncio
+    worker = asyncio.create_task(queue._queue.join())
+    # Drain all 4 items
+    for _ in range(4):
+        item = await queue._queue.get()
+        await item.fn()
+        queue._queue.task_done()
+    await worker
+
+    assert order == ["critical", "high", "normal", "low"]
+
+
+# ── NLScheduler: zero-retries job fails immediately without asyncio.sleep ────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_zero_retries_fails_immediately():
+    """Job with max_retries=0 raises on first failure, no retry sleep."""
+    from jarvis.scheduling import NLScheduler, Priority
+    from unittest.mock import AsyncMock, MagicMock, patch
+    fake_jarvis = MagicMock()
+    fake_jarvis.chat = AsyncMock(side_effect=RuntimeError("boom"))
+    fake_jarvis.memory = MagicMock()
+    fake_jarvis.memory.add_scheduled_task = MagicMock()
+
+    sched = NLScheduler(fake_jarvis)
+    job = await sched.add("zero_retry", "every hour", "fail", max_retries=0)
+
+    with patch("asyncio.sleep", AsyncMock()) as fake_sleep:
+        result = await sched.run_now(job.id)
+
+    fake_sleep.assert_not_called()
+    assert "failed" in result
+    assert job.error_count == 1
+
+
+# ── NLScheduler: ScheduledJob.to_dict() covers all fields ────────────────────
+
+def test_scheduled_job_to_dict_all_fields():
+    from jarvis.scheduling import ScheduledJob, Priority
+    job = ScheduledJob(
+        name="backup",
+        cron="0 3 * * *",
+        prompt="run backup",
+        priority=Priority.HIGH,
+        max_retries=5,
+        retry_delay=120,
+        enabled=False,
+        last_run="2026-01-01T03:00:00Z",
+        last_status="success",
+        run_count=10,
+        error_count=2,
+        tags=["infra", "nightly"],
+    )
+    d = job.to_dict()
+    assert d["name"] == "backup"
+    assert d["cron"] == "0 3 * * *"
+    assert d["priority"] == "HIGH"
+    assert d["max_retries"] == 5
+    assert d["retry_delay"] == 120
+    assert d["enabled"] is False
+    assert d["run_count"] == 10
+    assert d["error_count"] == 2
+    assert d["tags"] == ["infra", "nightly"]

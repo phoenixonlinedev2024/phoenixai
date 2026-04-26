@@ -191,3 +191,58 @@ def test_corrupt_db_path_auto_creates_parent(tmp_path):
     ms.store_fact("x", "y")
     assert nested.exists()
     assert ms.recall_fact("x") == "y"
+
+
+# ── Gap list / resolve / re-list ──────────────────────────────────────────────
+
+def test_gaps_list_and_resolve(memory_store):
+    memory_store.log_gap("can't generate images", context="user asked for image")
+    memory_store.log_gap("can't parse PDFs", context="PDF upload")
+    gaps = memory_store.get_open_gaps()
+    assert len(gaps) >= 2
+    descriptions = [g["description"] for g in gaps]
+    assert any("image" in d for d in descriptions)
+    assert any("PDF" in d for d in descriptions)
+
+    # Resolve one gap
+    gap_id = next(g["id"] for g in gaps if "image" in g["description"])
+    memory_store.resolve_gap(gap_id)
+
+    remaining_gaps = memory_store.get_open_gaps()
+    remaining_descriptions = [g["description"] for g in remaining_gaps]
+    assert all("image" not in d for d in remaining_descriptions)
+
+
+def test_search_facts_matches_by_value(memory_store):
+    memory_store.store_fact("colour", "blue sky")
+    memory_store.store_fact("size", "very large building")
+    # Search by value substring
+    results = memory_store.search_facts("blue")
+    assert any(r["key"] == "colour" for r in results)
+    assert all(r["key"] != "size" for r in results)
+
+
+def test_search_facts_returns_multiple_matches(memory_store):
+    memory_store.store_fact("alpha_topic", "test_subject_xyz")
+    memory_store.store_fact("beta_topic", "test_subject_xyz")
+    results = memory_store.search_facts("test_subject_xyz")
+    keys = {r["key"] for r in results}
+    assert "alpha_topic" in keys
+    assert "beta_topic" in keys
+
+
+def test_search_facts_empty_when_no_match(memory_store):
+    results = memory_store.search_facts("zzz_not_found_anywhere_xyz")
+    assert results == []
+
+
+def test_history_limit_zero_returns_empty(memory_store):
+    memory_store.save_message("sid", "user", "hi")
+    h = memory_store.get_history("sid", limit=0)
+    assert h == []
+
+
+def test_store_and_recall_json_fact(memory_store):
+    memory_store.store_fact("config", {"key": "value", "count": 42})
+    val = memory_store.recall_fact("config")
+    assert val == {"key": "value", "count": 42}

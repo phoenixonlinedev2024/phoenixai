@@ -190,3 +190,54 @@ async def test_synthesise_tool_strips_code_fence(tmp_path, monkeypatch):
     tool = await synthesise_tool("fenced capability", client, build_registry())
     assert tool is not None
     assert tool.name == "fenced_tool"
+
+
+# ── Additional _nl_to_cron cases (remaining day names + "daily at") ───────────
+
+@pytest.mark.parametrize("phrase,expected", [
+    ("every tuesday",   "0 9 * * 2"),
+    ("every wednesday", "0 9 * * 3"),
+    ("every thursday",  "0 9 * * 4"),
+    ("Every Tuesday",   "0 9 * * 2"),   # case-insensitive
+    ("daily at 9",      "0 9 * * *"),
+    ("daily at 14:30",  "30 14 * * *"),
+    ("daily at 0",      "0 0 * * *"),   # midnight via daily-at
+])
+def test_nl_to_cron_remaining_patterns(phrase, expected):
+    assert _nl_to_cron(phrase) == expected
+
+
+# ── Additional _validate_cron boundary cases ──────────────────────────────────
+
+@pytest.mark.parametrize("expr,keyword", [
+    ("0 8 0 * *",   "day of month"),   # day < 1
+    ("0 8 32 * *",  "day of month"),   # day > 31
+    ("0 8 * 0 *",   "month"),          # month < 1
+    ("0 8 * 13 *",  "month"),          # month > 12
+])
+def test_validate_cron_out_of_range_fields(expr, keyword):
+    result = _validate_cron(expr)
+    assert "issues" in result.lower() or keyword in result
+
+
+def test_validate_cron_day_of_week_7_is_valid():
+    """Day-of-week 7 (Sunday) is within [0,7]."""
+    result = _validate_cron("0 9 * * 7")
+    assert "Valid cron" in result
+
+
+def test_validate_cron_range_expression():
+    """'1-5' splits on '-' and takes first value for range check."""
+    result = _validate_cron("0 9 * * 1-5")
+    assert "Valid cron" in result
+
+
+def test_validate_cron_comma_expression():
+    """'6,0' splits on ',' and takes first value for range check."""
+    result = _validate_cron("0 9 * * 6,0")
+    assert "Valid cron" in result
+
+
+def test_validate_cron_six_fields_invalid():
+    result = _validate_cron("0 8 * * * *")
+    assert "Invalid cron" in result
