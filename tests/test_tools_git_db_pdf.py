@@ -592,3 +592,86 @@ def test_git_commit_add_all_false_skips_add():
         out = _git_commit(".", "no-add commit", add_all=False)
     assert "Committed" in out
     repo.git.add.assert_not_called()
+
+
+# ── git_tools: additional edge cases ─────────────────────────────────────────
+
+def test_git_status_gitpython_missing():
+    """_git_status returns error when gitpython not installed."""
+    import sys
+    from jarvis.tools.git_tools import _git_status
+    with patch.dict(sys.modules, {"git": None}):
+        out = _git_status(".")
+    assert "gitpython" in out.lower() or "not installed" in out.lower()
+
+
+def test_git_log_gitpython_missing():
+    """_git_log returns error when gitpython not installed."""
+    import sys
+    from jarvis.tools.git_tools import _git_log
+    with patch.dict(sys.modules, {"git": None}):
+        out = _git_log(".")
+    assert "error" in out.lower() or "gitpython" in out.lower()
+
+
+def test_git_commit_add_all_true_calls_add():
+    """When add_all=True, repo.git.add(A=True) is called."""
+    from unittest.mock import MagicMock, patch
+    from jarvis.tools.git_tools import _git_commit
+    fake, repo = _fake_git()
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_commit(".", "add-all commit", add_all=True)
+    assert "Committed" in out
+    repo.git.add.assert_called_once_with(A=True)
+
+
+def test_git_diff_no_changes():
+    """_git_diff returns 'No changes.' when diff is empty."""
+    from unittest.mock import MagicMock, patch
+    from jarvis.tools.git_tools import _git_diff
+    fake, repo = _fake_git()
+    repo.index.diff.return_value = []  # empty diff
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_diff(".")
+    assert "No changes" in out
+
+
+def test_git_diff_staged_uses_head():
+    """staged=True calls repo.index.diff('HEAD')."""
+    from unittest.mock import MagicMock, patch, call
+    from jarvis.tools.git_tools import _git_diff
+    fake, repo = _fake_git()
+    repo.index.diff.return_value = []
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        _git_diff(".", staged=True)
+    # First call should be diff("HEAD")
+    calls = repo.index.diff.call_args_list
+    assert any(c == call("HEAD") for c in calls)
+
+
+def test_git_branch_list_returns_branches():
+    """_git_branch with no name returns list of branches."""
+    from unittest.mock import MagicMock, patch
+    from jarvis.tools.git_tools import _git_branch
+    fake, repo = _fake_git()
+    b1 = MagicMock()
+    b1.name = "main"
+    b2 = MagicMock()
+    b2.name = "feature"
+    repo.branches = [b1, b2]
+    repo.active_branch.name = "main"
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_branch(".")
+    assert "main" in out
+    assert "feature" in out
+
+
+# ── database_tools: missing sqlalchemy ───────────────────────────────────────
+
+def test_db_query_sqlalchemy_missing():
+    """_db_query returns error message when sqlalchemy not installed."""
+    import sys
+    with patch.dict(sys.modules, {"sqlalchemy": None}):
+        from jarvis.tools.database_tools import _db_query
+        out = _db_query("sqlite:///:memory:", "SELECT 1")
+    assert "error" in out.lower() or "sqlalchemy" in out.lower() or "not installed" in out.lower()
