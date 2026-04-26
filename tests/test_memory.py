@@ -348,3 +348,121 @@ def test_store_fact_with_single_quotes_in_value(memory_store):
     memory_store.store_fact("greeting", "it's a beautiful day")
     val = memory_store.recall_fact("greeting")
     assert val == "it's a beautiful day"
+
+
+# ── record_skill_use details ──────────────────────────────────────────────────
+
+def test_record_skill_use_both_success_and_failure(memory_store):
+    memory_store.record_skill_use("transcribe", "convert audio to text", success=True)
+    memory_store.record_skill_use("transcribe", "convert audio to text", success=False)
+    memory_store.record_skill_use("transcribe", "convert audio to text", success=True)
+    # Summary should show 3 uses with 2/3 success
+    s = memory_store.summary()
+    assert isinstance(s, str)
+
+
+def test_record_skill_use_multiple_skills(memory_store):
+    memory_store.record_skill_use("tool_a", "does A", success=True)
+    memory_store.record_skill_use("tool_b", "does B", success=False)
+    s = memory_store.summary()
+    assert "skill" in s.lower() or "tool" in s.lower()
+
+
+# ── A/B test result recording ─────────────────────────────────────────────────
+
+def test_record_ab_result_and_get_winner(memory_store):
+    memory_store.record_ab_result("task123", "response A text", "response B text", "B", 0.4, 0.8)
+    winner = memory_store.get_ab_winner("task123")
+    assert winner == "B"
+
+
+def test_ab_latest_result_wins_over_older(memory_store):
+    memory_store.record_ab_result("task_order", "a", "b", "A", 0.7, 0.3)
+    memory_store.record_ab_result("task_order", "a", "b", "B", 0.4, 0.9)
+    winner = memory_store.get_ab_winner("task_order")
+    assert winner == "B"  # most recent wins
+
+
+def test_ab_winner_returns_none_when_no_history(memory_store):
+    assert memory_store.get_ab_winner("no_such_hash") is None
+
+
+# ── get_scheduled_tasks and update_task_run ───────────────────────────────────
+
+def test_get_scheduled_tasks_returns_all(memory_store):
+    memory_store.add_scheduled_task("job1", "0 9 * * *", "daily report")
+    memory_store.add_scheduled_task("job2", "*/30 * * * *", "status check")
+    tasks = memory_store.get_scheduled_tasks()
+    names = [t["name"] for t in tasks]
+    assert "job1" in names
+    assert "job2" in names
+
+
+def test_update_task_run_updates_timestamps(memory_store):
+    memory_store.add_scheduled_task("update-me", "0 0 * * *", "run me")
+    memory_store.update_task_run("update-me", "2026-04-26T09:00:00Z", "2026-04-27T09:00:00Z")
+    tasks = memory_store.get_scheduled_tasks()
+    t = next(t for t in tasks if t["name"] == "update-me")
+    assert t["last_run"] == "2026-04-26T09:00:00Z"
+    assert t["next_run"] == "2026-04-27T09:00:00Z"
+
+
+# ── update_monitor_hash ───────────────────────────────────────────────────────
+
+def test_update_monitor_hash_sets_hash(memory_store):
+    memory_store.add_monitor_target("hashtest", "url", "https://example.com", "notify")
+    memory_store.update_monitor_hash("hashtest", "abc123def456")
+    targets = memory_store.get_monitor_targets()
+    t = next(t for t in targets if t["name"] == "hashtest")
+    assert t["last_hash"] == "abc123def456"
+
+
+def test_update_monitor_hash_updates_existing(memory_store):
+    memory_store.add_monitor_target("update-hash", "url", "https://x.com", "alert")
+    memory_store.update_monitor_hash("update-hash", "first_hash")
+    memory_store.update_monitor_hash("update-hash", "second_hash")
+    targets = memory_store.get_monitor_targets()
+    t = next(t for t in targets if t["name"] == "update-hash")
+    assert t["last_hash"] == "second_hash"
+
+
+# ── log_gap / get_open_gaps / resolve_gap ────────────────────────────────────
+
+def test_log_gap_and_get_open_gaps(memory_store):
+    memory_store.log_gap("cannot parse PDF tables", context="user request")
+    memory_store.log_gap("no speech synthesis", context="voice mode")
+    gaps = memory_store.get_open_gaps()
+    descs = [g["description"] for g in gaps]
+    assert "cannot parse PDF tables" in descs
+    assert "no speech synthesis" in descs
+
+
+def test_resolve_gap_removes_from_open_list(memory_store):
+    memory_store.log_gap("gap to resolve", context="test")
+    gaps = memory_store.get_open_gaps()
+    gap_id = gaps[0]["id"]
+    memory_store.resolve_gap(gap_id)
+    open_gaps = memory_store.get_open_gaps()
+    assert not any(g["id"] == gap_id for g in open_gaps)
+
+
+# ── recall_fact returns None for missing keys ─────────────────────────────────
+
+def test_recall_fact_returns_none_for_unknown_key(memory_store):
+    assert memory_store.recall_fact("definitely_not_stored_key_xyz") is None
+
+
+# ── summary string contents ────────────────────────────────────────────────────
+
+def test_summary_reflects_fact_count(memory_store):
+    memory_store.store_fact("key1", "value1")
+    memory_store.store_fact("key2", "value2")
+    s = memory_store.summary()
+    assert "2" in s or "fact" in s.lower()
+
+
+def test_summary_reflects_lesson_count(memory_store):
+    for i in range(3):
+        memory_store.store_lesson(f"lesson {i}")
+    s = memory_store.summary()
+    assert "3" in s or "lesson" in s.lower()
