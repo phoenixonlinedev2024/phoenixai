@@ -177,3 +177,88 @@ def test_get_collection_raises_when_chromadb_missing(monkeypatch):
     sm = SemanticMemory()
     with pytest.raises(RuntimeError, match="chromadb not installed"):
         sm._get_collection()
+
+
+# ── store_fact / store_lesson / store_conversation_snippet ────────────────────
+
+def test_store_fact_passes_fact_metadata(mem):
+    mem.store_fact("language", "Python")
+    kwargs = mem._collection.upsert.call_args.kwargs
+    assert kwargs["metadatas"][0]["type"] == "fact"
+    assert kwargs["metadatas"][0]["key"] == "language"
+    assert "language: Python" in kwargs["documents"][0]
+
+
+def test_store_lesson_passes_lesson_metadata(mem):
+    mem.store_lesson("always validate input")
+    kwargs = mem._collection.upsert.call_args.kwargs
+    assert kwargs["metadatas"][0]["type"] == "lesson"
+    assert kwargs["documents"][0] == "always validate input"
+
+
+def test_store_conversation_snippet_passes_session_id(mem):
+    mem.store_conversation_snippet("user asked about Python", session_id="sess-42")
+    kwargs = mem._collection.upsert.call_args.kwargs
+    assert kwargs["metadatas"][0]["type"] == "conversation"
+    assert kwargs["metadatas"][0]["session_id"] == "sess-42"
+
+
+# ── recall similarity calculation ─────────────────────────────────────────────
+
+def test_recall_similarity_from_distance(mem):
+    """similarity = 1 - distance (cosine similarity)."""
+    mem._collection = _fake_collection(
+        docs=["doc"],
+        metas=[{"type": "fact"}],
+        distances=[0.3],
+    )
+    results = mem.recall("query", n=1)
+    assert len(results) == 1
+    assert results[0]["similarity"] == pytest.approx(0.7)
+
+
+def test_recall_returns_empty_on_exception(mem):
+    mem._collection.query = MagicMock(side_effect=RuntimeError("query failed"))
+    results = mem.recall("anything")
+    assert results == []
+
+
+def test_recall_with_where_filter(mem):
+    """Where filter is passed to the collection query."""
+    mem._collection = _fake_collection(docs=["matched"], metas=[{"type": "fact"}], distances=[0.1])
+    mem.recall("query", n=1, where={"type": "fact"})
+    call_kwargs = mem._collection.query.call_args.kwargs
+    assert call_kwargs.get("where") == {"type": "fact"}
+
+
+# ── store error handling ──────────────────────────────────────────────────────
+
+def test_store_error_does_not_raise(mem, capsys):
+    mem._collection.upsert = MagicMock(side_effect=RuntimeError("upsert failed"))
+    mem.store("data")  # should not raise
+    out = capsys.readouterr().out
+    assert "Store error" in out
+
+
+# ── recall_relevant formatting ────────────────────────────────────────────────
+
+def test_recall_relevant_similarity_shown_in_output(mem):
+    mem._collection = _fake_collection(
+        docs=["relevant fact"],
+        metas=[{"type": "fact"}],
+        distances=[0.15],
+    )
+    out = mem.recall_relevant("query")
+    assert "0.85" in out  # 1 - 0.15
+
+
+def test_recall_relevant_multiple_types(mem):
+    mem._collection = _fake_collection(
+        docs=["fact text", "lesson text", "conversation text"],
+        metas=[{"type": "fact"}, {"type": "lesson"}, {"type": "conversation"}],
+        distances=[0.1, 0.2, 0.3],
+    )
+    out = mem.recall_relevant("query", n=3)
+    assert "[fact]" in out
+    assert "[lesson]" in out
+    assert "[conversation]" in out

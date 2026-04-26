@@ -128,3 +128,67 @@ def test_capability_created_template_has_placeholder():
 def test_learning_template_has_count_placeholder():
     result = JARVIS_LEARNING_TEMPLATE.format(count=5)
     assert "5" in result
+
+
+# ── Profile content verification ──────────────────────────────────────────────
+
+def test_professional_profile_contains_formal_guidance():
+    p = PERSONALITY_PROFILES["professional"]
+    assert "formal" in p.lower() or "Professional" in p
+
+
+def test_casual_profile_contains_casual_guidance():
+    p = PERSONALITY_PROFILES["casual"]
+    assert "friendly" in p.lower() or "Casual" in p
+
+
+def test_terse_profile_contains_brevity_guidance():
+    p = PERSONALITY_PROFILES["terse"]
+    assert "few words" in p.lower() or "Terse" in p
+
+
+def test_verbose_profile_contains_detail_guidance():
+    p = PERSONALITY_PROFILES["verbose"]
+    assert "detail" in p.lower() or "Verbose" in p
+
+
+def test_all_profiles_contain_base_identity():
+    """Every profile includes JARVIS identity text."""
+    for name, profile in PERSONALITY_PROFILES.items():
+        assert "JARVIS" in profile, f"Profile '{name}' missing JARVIS identity"
+
+
+# ── get_system_prompt combinations ────────────────────────────────────────────
+
+def test_get_system_prompt_voice_mode_adds_voice_section():
+    prompt = get_system_prompt(voice_mode=True)
+    assert "Voice Mode" in prompt or "spoken aloud" in prompt
+
+
+def test_get_system_prompt_non_voice_no_voice_section():
+    prompt = get_system_prompt(voice_mode=False)
+    assert "spoken aloud" not in prompt
+
+
+def test_get_system_prompt_unknown_profile_falls_back_to_default():
+    default_prompt = get_system_prompt(profile="default")
+    unknown_prompt = get_system_prompt(profile="nonexistent_profile")
+    assert default_prompt == unknown_prompt
+
+
+def test_get_system_prompt_memory_context_section_label():
+    prompt = get_system_prompt(memory_context="user prefers dark mode")
+    assert "Your Current Memory" in prompt
+    assert "dark mode" in prompt
+
+
+def test_get_system_prompt_gap_context_section_label():
+    prompt = get_system_prompt(gap_context="need PDF tool")
+    assert "Capability Gaps" in prompt
+    assert "PDF tool" in prompt
+
+
+# ── JARVIS_SYSTEM_PROMPT is the default profile ────────────────────────────────
+
+def test_jarvis_system_prompt_is_default():
+    assert JARVIS_SYSTEM_PROMPT == PERSONALITY_PROFILES["default"]
