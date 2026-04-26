@@ -566,3 +566,13 @@ def test_voice_command_transcript_error(monkeypatch):
 
     assert result.exit_code == 0
     assert "Error" in result.stdout
+
+
+# ── __main__ guard (line 406) ─────────────────────────────────────────────────
+
+def test_main_module_entrypoint_via_runpy():
+    """Branch 406: running jarvis.main as __main__ triggers app()."""
+    import runpy
+    import pytest
+    with pytest.raises(SystemExit):
+        runpy.run_module("jarvis.main", run_name="__main__", alter_sys=True)

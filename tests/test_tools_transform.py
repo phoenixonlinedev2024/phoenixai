@@ -200,3 +200,13 @@ def test_jq_query_empty_parts_skipped():
          patch.dict(sys.modules, {"jq": None}):
         result = _jq_query(data, ".a..b")
     assert "found_it" in result
+
+
+def test_jq_query_query_without_dot_prefix_returns_unavailable():
+    """Branch 29->37: query not starting with '.' skips pure-Python fallback."""
+    from jarvis.tools.transform_tools import _jq_query
+    data = '{"a": 1}'
+    with patch("subprocess.run", side_effect=FileNotFoundError), \
+         patch.dict(sys.modules, {"jq": None}):
+        result = _jq_query(data, "length")
+    assert "jq not available" in result

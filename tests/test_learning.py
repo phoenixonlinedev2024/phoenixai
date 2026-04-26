@@ -128,3 +128,16 @@ async def test_reflect_truncates_to_last_30_turns(memory_store, monkeypatch):
     assert "msg99" in sent
     assert "msg70" in sent
     assert "msg0" not in sent
+
+
+@pytest.mark.asyncio
+async def test_reflect_code_fence_without_json_prefix(memory_store, monkeypatch):
+    """Branch 52->54: code fence content not starting with 'json' skips raw[4:]."""
+    monkeypatch.setattr("jarvis.memory.learning.cfg.LEARNING_ENABLED", True)
+    # Fence is "```\n{...}" — split gives "\n{...}", which doesn't start with "json"
+    payload = '{"lessons":["branch test"],"facts":{},"capability_gaps":[]}'
+    fenced = f"```\n{payload}\n```"
+    client = _fake_client_returning(fenced)
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "x"}], client=client)
+    assert result.get("lessons") == ["branch test"]

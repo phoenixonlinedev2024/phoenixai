@@ -568,3 +568,27 @@ def test_db_schema_error():
     from jarvis.tools.database_tools import _db_schema
     out = _db_schema("not-a-valid-url://???", table="t")
     assert "Schema error" in out or "error" in out.lower()
+
+
+# ── git_tools: branch 53->55 (_git_commit with add_all=False) ────────────────
+
+def _fake_git():
+    """Reuse pattern from existing git tests."""
+    import sys
+    from unittest.mock import MagicMock
+    fake = MagicMock()
+    repo = MagicMock()
+    fake.Repo = MagicMock(return_value=repo)
+    repo.git = MagicMock()
+    return fake, repo
+
+
+def test_git_commit_add_all_false_skips_add():
+    """Branch 53->55: when add_all=False, repo.git.add is not called."""
+    from unittest.mock import MagicMock, patch
+    from jarvis.tools.git_tools import _git_commit
+    fake, repo = _fake_git()
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_commit(".", "no-add commit", add_all=False)
+    assert "Committed" in out
+    repo.git.add.assert_not_called()

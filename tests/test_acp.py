@@ -220,3 +220,12 @@ def test_publish_sync_no_running_loop_is_silent(bus):
     with patch("asyncio.get_running_loop", side_effect=RuntimeError("no running loop")):
         bus.publish_sync("no_loop_topic", payload="ignored")
     # No exception raised — test passes if we reach here
+
+
+def test_unsubscribe_nonexistent_topic_is_noop(bus):
+    """Branch 45->exit: unsubscribe when topic not in _subs does nothing."""
+    async def handler(msg):
+        pass
+
+    bus.unsubscribe("never_subscribed_topic", handler)
+    # No exception raised — test passes if we reach here

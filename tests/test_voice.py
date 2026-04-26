@@ -811,3 +811,83 @@ def test_whisper_listen_loop_exception_continues(monkeypatch):
             w._listen_loop(lambda t: None)
 
     assert call_count[0] == 2
+
+
+def test_stt_listen_loop_no_wake_word_continues(monkeypatch):
+    """Branch 58->53: recognized text does NOT contain the wake word — loop continues."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "WAKE_WORD", "jarvis")
+
+    stt = STTEngine()
+    transcripts = []
+    call_count = [0]
+
+    def fake_recognize(audio):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return "hello world"  # no wake word
+        stt._running = False
+        raise Exception("done")
+
+    fake_recognizer = MagicMock()
+    fake_recognizer.recognize_google.side_effect = fake_recognize
+    fake_recognizer.listen.return_value = MagicMock()
+
+    fake_sr = MagicMock()
+    fake_sr.Recognizer.return_value = fake_recognizer
+    fake_mic = MagicMock()
+    fake_mic.__enter__ = MagicMock(return_value=fake_mic)
+    fake_mic.__exit__ = MagicMock(return_value=False)
+    fake_sr.Microphone.return_value = fake_mic
+
+    stt._running = True
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr}):
+        stt._listen_loop(lambda t: transcripts.append(t))
+
+    assert len(transcripts) == 0  # no wake word → nothing sent
+
+
+def test_whisper_listen_loop_no_wake_word_continues(monkeypatch):
+    """Branch 77->67: transcribed text does NOT contain the wake word — loop continues."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "WAKE_WORD", "jarvis")
+
+    w = WhisperSTT()
+    transcripts = []
+    call_count = [0]
+
+    fake_audio = MagicMock()
+    fake_audio.get_raw_data = MagicMock(return_value=b"\x00" * 200)
+
+    fake_sr = MagicMock()
+    recogniser = MagicMock()
+
+    def _listen(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] >= 2:
+            w._running = False
+        return fake_audio
+
+    recogniser.listen.side_effect = _listen
+    fake_sr.Recognizer.return_value = recogniser
+    fake_mic = MagicMock()
+    fake_mic.__enter__ = MagicMock(return_value=fake_mic)
+    fake_mic.__exit__ = MagicMock(return_value=False)
+    fake_sr.Microphone.return_value = fake_mic
+
+    fake_np = MagicMock()
+    arr = MagicMock()
+    arr.astype.return_value = MagicMock()
+    fake_np.frombuffer.return_value = arr
+    fake_np.int16 = int
+    fake_np.float32 = float
+
+    fake_model = MagicMock()
+    fake_model.transcribe.return_value = {"text": "hello world"}  # no wake word
+
+    w._running = True
+    with patch.dict(sys.modules, {"speech_recognition": fake_sr, "numpy": fake_np}):
+        with patch("jarvis.voice.whisper_stt._load_model", return_value=fake_model):
+            w._listen_loop(lambda t: transcripts.append(t))
+
+    assert len(transcripts) == 0  # no wake word detected

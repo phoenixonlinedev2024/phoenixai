@@ -1529,3 +1529,145 @@ def test_send_twilio_whatsapp_success(monkeypatch, capsys):
 
     fake_Client.assert_called_once_with("ACtest", "authtoken")
     fake_client.messages.create.assert_called_once()
+
+
+# ── Discord on_message branches (63->69, 65->69) ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_discord_on_message_not_mentioned_skips_chat(monkeypatch, fake_jarvis):
+    """Branch 63->69: message without bot mention skips chat, calls process_commands."""
+    events, cmds, fake_bot, fd, fe, fc, run_fn = _setup_discord_bot(monkeypatch, fake_jarvis)
+    with patch.dict(sys.modules, {"discord": fd, "discord.ext": fe, "discord.ext.commands": fc}):
+        await run_fn(fake_jarvis)
+
+    msg = MagicMock()
+    msg.author = MagicMock()
+    msg.author.__eq__ = MagicMock(return_value=False)
+    msg.mentions = []  # bot NOT mentioned
+    msg.channel.typing = MagicMock()
+    await events["on_message"](msg)
+    fake_jarvis.chat.assert_not_awaited()
+    fake_bot.process_commands.assert_called_once_with(msg)
+
+
+@pytest.mark.asyncio
+async def test_discord_on_message_mention_empty_text(monkeypatch, fake_jarvis):
+    """Branch 65->69: bot mentioned but stripped text is empty — skip chat."""
+    events, cmds, fake_bot, fd, fe, fc, run_fn = _setup_discord_bot(monkeypatch, fake_jarvis)
+    with patch.dict(sys.modules, {"discord": fd, "discord.ext": fe, "discord.ext.commands": fc}):
+        await run_fn(fake_jarvis)
+
+    msg = MagicMock()
+    msg.author = MagicMock()
+    msg.author.__eq__ = MagicMock(return_value=False)
+    msg.mentions = [fake_bot.user]
+    msg.content = f"<@{fake_bot.user.id}>"  # mention only, no text
+    msg.channel.typing = MagicMock()
+    await events["on_message"](msg)
+    fake_jarvis.chat.assert_not_awaited()
+    fake_bot.process_commands.assert_called_once_with(msg)
+
+
+# ── Signal run() loop exits immediately when proc.returncode is set (48->exit) ─
+
+@pytest.mark.asyncio
+async def test_signal_run_exits_when_proc_returncode_not_none(monkeypatch, fake_jarvis):
+    """Branch 48->exit: while loop condition false immediately (proc has already exited)."""
+    from jarvis.config import cfg
+    from jarvis.bots.signal_bot import SignalBot
+
+    monkeypatch.setattr(cfg, "SIGNAL_CLI_PATH", "/usr/bin/signal-cli")
+    monkeypatch.setattr(cfg, "SIGNAL_PHONE_NUMBER", "+15551234")
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = 1  # process already exited → while condition False immediately
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        bot = SignalBot(fake_jarvis)
+        await bot.run()  # must return without hanging
+
+
+# ── IRC: send() with writer=None is noop; reader=None triggers break ──────────
+
+@pytest.mark.asyncio
+async def test_irc_send_noop_and_reader_none_breaks(monkeypatch, fake_jarvis):
+    """Branches 22->exit and 43: reconnect sets reader/writer=None → send() skips
+    write, then while-loop breaks on 'if not reader'."""
+    from jarvis.config import cfg
+    from jarvis.bots.irc_bot import run_irc_bot
+
+    monkeypatch.setattr(cfg, "IRC_SERVER", "irc.test.net")
+    monkeypatch.setattr(cfg, "IRC_PORT", 6667)
+    monkeypatch.setattr(cfg, "IRC_NICK", "jarvis")
+    monkeypatch.setattr(cfg, "IRC_CHANNELS", "#test")
+
+    first_reader = MagicMock()
+    call_count = [0]
+
+    async def fake_open_connection(*_args, **_kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            writer = MagicMock()
+            writer.write = MagicMock()
+            writer.drain = AsyncMock()
+            return (first_reader, writer)
+        # Reconnect: (None, None) → send() skips write (22->exit), loop breaks (43)
+        return (None, None)
+
+    async def fake_readline():
+        raise RuntimeError("dropped")
+
+    first_reader.readline = fake_readline
+
+    with patch("asyncio.open_connection", fake_open_connection), \
+         patch("asyncio.sleep", AsyncMock()):
+        await run_irc_bot(fake_jarvis)
+
+    assert call_count[0] == 2
+
+
+# ── Mattermost: message starting with "@other_bot" is ignored (54->43) ────────
+
+@pytest.mark.asyncio
+async def test_mattermost_message_at_other_bot_is_ignored(monkeypatch, fake_jarvis):
+    """Branch 54->43: message starts with '@' but NOT '@botname' — continue."""
+    import json as _json
+    from jarvis.config import cfg
+    from jarvis.bots.mattermost_bot import run_mattermost_bot
+
+    monkeypatch.setattr(cfg, "MATTERMOST_URL", "http://mm.example.com")
+    monkeypatch.setattr(cfg, "MATTERMOST_TOKEN", "tok")
+    monkeypatch.setattr(cfg, "MATTERMOST_BOT_NAME", "jarvis")
+    monkeypatch.setattr(cfg, "MATTERMOST_BOT_USER_ID", "bot-uid")
+
+    post = {"message": "@otherbot hello", "channel_id": "ch1", "user_id": "u1"}
+    posted_event = _json.dumps({"event": "posted", "data": {"post": _json.dumps(post)}})
+
+    def fake_connect(*args, **kwargs):
+        class FakeWS:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): pass
+            async def send(self, data): pass
+            def __aiter__(self): return self._gen()
+            async def _gen(self):
+                yield posted_event
+                raise asyncio.CancelledError("stop_loop")
+        return FakeWS()
+
+    fake_ws_mod = MagicMock()
+    fake_ws_mod.connect = fake_connect
+
+    fake_session = MagicMock()
+    fake_session.post = AsyncMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+    fake_aiohttp = MagicMock()
+    fake_aiohttp.ClientSession = MagicMock(return_value=fake_session)
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod, "aiohttp": fake_aiohttp}):
+        try:
+            await run_mattermost_bot(fake_jarvis)
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    fake_jarvis.chat.assert_not_awaited()

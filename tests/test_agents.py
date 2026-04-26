@@ -461,3 +461,41 @@ async def test_process_messages_no_handler_sets_error():
     await asyncio.sleep(0.05)
     worker.cancel()
     assert bus._queues["worker"].empty()
+
+
+@pytest.mark.asyncio
+async def test_process_messages_response_with_no_pending_future():
+    """Branch 70->86: future is None when msg.id not in _pending — silently skipped."""
+    bus = AgentRPC()
+    bus.register("worker")
+    # A response for an id we never called — no future in _pending
+    msg = RPCMessage(id="unknown-id-xyz", is_response=True, result="done")
+    await bus._queues["worker"].put(msg)
+    worker = asyncio.create_task(bus.process_messages("worker"))
+    await asyncio.sleep(0.05)
+    worker.cancel()
+    assert bus._queues["worker"].empty()
+
+
+@pytest.mark.asyncio
+async def test_subagent_run_ignores_unknown_block_type():
+    """Branch 60->57: block with type other than text/tool_use is skipped in loop."""
+    thinking_block = MagicMock()
+    thinking_block.type = "thinking"
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "done"
+
+    response = MagicMock()
+    response.content = [thinking_block, text_block]
+
+    parent = MagicMock()
+    parent.client.messages.create = AsyncMock(return_value=response)
+    parent._get_model = MagicMock(return_value="claude-haiku-4-5-20251001")
+    parent.registry.anthropic_tools = MagicMock(return_value=[])
+
+    from jarvis.agents.subagent import SubAgent, SubagentTask
+    task = SubagentTask(goal="test unknown block")
+    agent = SubAgent(task, parent)
+    result = await agent.run()
+    assert result == "done"

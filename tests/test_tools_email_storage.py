@@ -354,3 +354,59 @@ def test_get_s3_with_endpoint_url(monkeypatch):
     assert client is fake_client
     _, kwargs = fake_boto3.client.call_args
     assert kwargs.get("endpoint_url") == "http://minio:9000"
+
+
+def test_read_emails_multipart_no_text_plain_parts(monkeypatch):
+    """Branch 62->68: multipart walk() iterates but finds no text/plain (for-loop exhausts)."""
+    import imaplib as real_imaplib
+
+    fake_mail = MagicMock()
+    fake_mail.__enter__ = MagicMock(return_value=fake_mail)
+    fake_mail.__exit__ = MagicMock(return_value=False)
+    fake_mail.login = MagicMock()
+    fake_mail.select = MagicMock(return_value=("OK", [b"1"]))
+    fake_mail.search = MagicMock(return_value=("OK", [b"1"]))
+
+    # multipart part that is NOT text/plain — for loop iterates but break never hit
+    fake_part = MagicMock()
+    fake_part.get_content_type = MagicMock(return_value="text/html")
+
+    msg = MagicMock()
+    msg.get = MagicMock(side_effect=lambda key, default="": {
+        "From": "sender@example.com", "Subject": "Test", "Date": "Mon"
+    }.get(key, default))
+    msg.is_multipart = MagicMock(return_value=True)
+    msg.walk = MagicMock(return_value=iter([fake_part]))  # one non-text/plain part
+
+    fake_mail.fetch = MagicMock(return_value=("OK", [(b"1", b"raw")]))
+
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "IMAP_HOST", "imap.test.com")
+    monkeypatch.setattr(cfg, "EMAIL_ADDRESS", "test@test.com")
+    monkeypatch.setattr(cfg, "EMAIL_PASSWORD", "password123")
+
+    with patch.object(real_imaplib, "IMAP4_SSL", return_value=fake_mail), \
+         patch("email.message_from_bytes", return_value=msg):
+        from jarvis.tools.email_tool import _read_emails
+        out = _read_emails(limit=1)
+
+    assert "sender@example.com" in out or "email" in out.lower() or "No emails" in out
+
+
+def test_get_s3_without_endpoint_url(monkeypatch):
+    """Branch 21->23: endpoint_url NOT added when S3_ENDPOINT_URL is empty."""
+    from jarvis.config import cfg
+    import jarvis.tools.storage_tools as st
+    monkeypatch.setattr(cfg, "S3_ENDPOINT_URL", "")
+    monkeypatch.setattr(cfg, "S3_ACCESS_KEY", "key")
+    monkeypatch.setattr(cfg, "S3_SECRET_KEY", "secret")
+    monkeypatch.setattr(cfg, "S3_REGION", "us-east-1")
+
+    fake_boto3 = MagicMock()
+    fake_client = MagicMock()
+    fake_boto3.client = MagicMock(return_value=fake_client)
+    with patch.dict(__import__("sys").modules, {"boto3": fake_boto3}):
+        client = st._get_s3()
+    assert client is fake_client
+    _, kwargs = fake_boto3.client.call_args
+    assert "endpoint_url" not in kwargs

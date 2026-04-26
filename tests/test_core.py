@@ -675,3 +675,208 @@ async def test_stream_agent_loop_malformed_tool_json(jarvis_instance):
     async for token in jarvis_instance.stream_chat("trigger malformed json"):
         tokens.append(token)
     # No exception raised — malformed JSON was swallowed and input defaulted to {}
+
+
+# ── Branch coverage tests ─────────────────────────────────────────────────────
+
+def test_build_system_active_skill_not_found_in_registry(jarvis_instance):
+    """Branch 166->169: _active_skill set but skills.get() returns None."""
+    jarvis_instance._active_skill = "no_such_skill_xyz"
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    system = jarvis_instance._build_system("hello", False)
+    assert isinstance(system, str)
+    assert "no_such_skill_xyz" not in system
+
+
+@pytest.mark.asyncio
+async def test_run_agent_loop_unknown_block_type_is_skipped(jarvis_instance):
+    """Branch 196->193: block with type other than text/tool_use is ignored."""
+    thinking_block = MagicMock()
+    thinking_block.type = "thinking"
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "final answer"
+
+    response = MagicMock()
+    response.content = [thinking_block, text_block]
+
+    jarvis_instance.client.messages.create = AsyncMock(return_value=response)
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+    jarvis_instance.semantic.store_conversation_snippet = MagicMock()
+    jarvis_instance.planner.score_confidence = AsyncMock(return_value=1.0)
+
+    result = await jarvis_instance.chat("think about this")
+    assert result == "final answer"
+
+
+@pytest.mark.asyncio
+async def test_stream_agent_loop_text_block_start_event(jarvis_instance):
+    """Branch 251->239: RawContentBlockStartEvent with type='text' (not tool_use)."""
+    StartTextEvent = type("RawContentBlockStartEvent", (), {})
+    StopEvent = type("RawContentBlockStopEvent", (), {})
+    TextDeltaEvent = type("RawContentBlockDeltaEvent", (), {})
+
+    def make_text_start():
+        evt = StartTextEvent()
+        block = MagicMock()
+        block.type = "text"  # not tool_use → branch 251->239
+        evt.content_block = block
+        return evt
+
+    def make_text_delta(text):
+        evt = TextDeltaEvent()
+        evt.delta = MagicMock()
+        evt.delta.text = text
+        evt.delta.partial_json = None
+        return evt
+
+    def make_stop():
+        evt = StopEvent()
+        return evt
+
+    class FakeStreamCtx:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        def __aiter__(self): return self._gen()
+        async def _gen(self):
+            yield make_text_start()
+            yield make_text_delta("hello")
+            yield make_stop()
+        async def get_final_message(self):
+            return MagicMock(content=[])
+
+    jarvis_instance.client.messages.stream = MagicMock(return_value=FakeStreamCtx())
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+    jarvis_instance.semantic.store_conversation_snippet = MagicMock()
+
+    tokens = []
+    async for token in jarvis_instance.stream_chat("test text start"):
+        tokens.append(token)
+    assert "hello" in "".join(tokens)
+
+
+@pytest.mark.asyncio
+async def test_stream_agent_loop_unknown_event_type(jarvis_instance):
+    """Branch 253->239: event with type not matching any handler is skipped."""
+    UnknownEvent = type("UnknownEventXYZ", (), {})
+    TextDeltaEvent = type("RawContentBlockDeltaEvent", (), {})
+
+    def make_text_delta(text):
+        evt = TextDeltaEvent()
+        evt.delta = MagicMock()
+        evt.delta.text = text
+        evt.delta.partial_json = None
+        return evt
+
+    class FakeStreamCtx:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        def __aiter__(self): return self._gen()
+        async def _gen(self):
+            yield UnknownEvent()  # 253->239 branch
+            yield make_text_delta("world")
+        async def get_final_message(self):
+            return MagicMock(content=[])
+
+    jarvis_instance.client.messages.stream = MagicMock(return_value=FakeStreamCtx())
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+    jarvis_instance.semantic.store_conversation_snippet = MagicMock()
+
+    tokens = []
+    async for token in jarvis_instance.stream_chat("unknown event"):
+        tokens.append(token)
+    assert "world" in "".join(tokens)
+
+
+@pytest.mark.asyncio
+async def test_stream_agent_loop_stop_without_current_tool(jarvis_instance):
+    """Branch 254->239: StopEvent when current_tool has no 'name' — skipped."""
+    StopEvent = type("RawContentBlockStopEvent", (), {})
+    TextDeltaEvent = type("RawContentBlockDeltaEvent", (), {})
+
+    def make_text_delta(text):
+        evt = TextDeltaEvent()
+        evt.delta = MagicMock()
+        evt.delta.text = text
+        evt.delta.partial_json = None
+        return evt
+
+    class FakeStreamCtx:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        def __aiter__(self): return self._gen()
+        async def _gen(self):
+            yield make_text_delta("ok")
+            yield StopEvent()  # stop without a preceding tool start → 254->239
+        async def get_final_message(self):
+            return MagicMock(content=[])
+
+    jarvis_instance.client.messages.stream = MagicMock(return_value=FakeStreamCtx())
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+    jarvis_instance.semantic.store_conversation_snippet = MagicMock()
+
+    tokens = []
+    async for token in jarvis_instance.stream_chat("stop no tool"):
+        tokens.append(token)
+    assert "ok" in "".join(tokens)
+
+
+@pytest.mark.asyncio
+async def test_stream_agent_loop_delta_no_text_no_json(jarvis_instance):
+    """Branch 246->239: delta event with neither text nor partial_json is skipped."""
+    DeltaEvent = type("RawContentBlockDeltaEvent", (), {})
+    TextDeltaEvent = type("RawContentBlockDeltaEvent", (), {})
+
+    def make_empty_delta():
+        evt = DeltaEvent()
+        delta = MagicMock(spec=[])  # spec=[] means no attributes exist
+        delta.text = None
+        delta.partial_json = None
+        evt.delta = delta
+        return evt
+
+    def make_text_delta(text):
+        evt = TextDeltaEvent()
+        evt.delta = MagicMock()
+        evt.delta.text = text
+        evt.delta.partial_json = None
+        return evt
+
+    class FakeStreamCtx:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        def __aiter__(self): return self._gen()
+        async def _gen(self):
+            yield make_empty_delta()   # 246->239 branch (no text, no partial_json)
+            yield make_text_delta("result")
+        async def get_final_message(self):
+            return MagicMock(content=[])
+
+    jarvis_instance.client.messages.stream = MagicMock(return_value=FakeStreamCtx())
+    jarvis_instance.semantic.recall_relevant = MagicMock(return_value="")
+    jarvis_instance.learner.build_context_prompt = MagicMock(return_value="")
+    jarvis_instance.semantic.store_conversation_snippet = MagicMock()
+
+    tokens = []
+    async for token in jarvis_instance.stream_chat("empty delta"):
+        tokens.append(token)
+    assert "result" in "".join(tokens)
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_synthesised_but_gaps_dont_match(jarvis_instance):
+    """Branch 306->305: open gaps exist but none contain the tool name."""
+    jarvis_instance.memory.log_gap("some unrelated gap description", context="ctx")
+
+    fake_tool = MagicMock()
+    fake_tool.run = MagicMock(return_value="synthesised result")
+
+    with patch("jarvis.core.synthesise_tool", AsyncMock(return_value=fake_tool)):
+        result = await jarvis_instance._execute_tool("no_match_tool_xyz", {})
+
+    assert result == "synthesised result"

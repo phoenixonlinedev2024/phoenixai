@@ -195,3 +195,15 @@ async def test_ab_test_strips_code_fence():
     winner, result = await planner.ab_test("task", "ans A", "ans B")
     assert winner == "A"
     assert result["score_a"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_decompose_code_fence_without_json_prefix():
+    """Branch 59->61: code fence content not starting with 'json' skips raw[4:]."""
+    payload = '{"subtasks":[{"id":1,"group":1,"description":"branch task"}],"requires_decomposition":true}'
+    fenced = f"```\n{payload}\n```"
+    client = _fake_client_returning(fenced)
+    planner = TaskPlanner(client=client, memory=MagicMock())
+    out = await planner.decompose("do task")
+    assert len(out) == 1
+    assert out[0]["description"] == "branch task"

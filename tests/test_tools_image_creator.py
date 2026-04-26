@@ -291,3 +291,24 @@ def test_make_fn_import_inside_body():
 def test_make_fn_syntax_error_raises():
     with pytest.raises(SyntaxError):
         _make_fn("def run(**kwargs):\n    return ??? bad syntax")
+
+
+@pytest.mark.asyncio
+async def test_synthesise_tool_code_fence_without_json_prefix(tmp_path, monkeypatch):
+    """Branch 65->68: code fence content not starting with 'json' skips raw[4:]."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "TOOLS_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+    from jarvis.tools.registry import ToolRegistry
+    reg = ToolRegistry()
+    client = MagicMock()
+    # Fence is "```\n{...}" — split gives "\n{...}", doesn't start with "json"
+    fenced = f"```\n{_valid_payload('no_json_prefix_tool')}\n```"
+    client.messages.create = AsyncMock(return_value=MagicMock(
+        content=[MagicMock(text=fenced)]
+    ))
+
+    tool = await synthesise_tool("no-json-prefix capability", client, reg)
+    assert tool is not None
+    assert tool.name == "no_json_prefix_tool"

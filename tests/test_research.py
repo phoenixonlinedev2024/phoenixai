@@ -292,3 +292,18 @@ def test_export_atropos_format(tmp_path, monkeypatch):
     record = json.loads(lines[0])
     assert "messages" in record
     assert "final_reward" in record
+
+
+def test_to_sharegpt_skips_non_user_non_assistant_turn():
+    """Branch 21->18: turn with role 'system' is skipped (neither user nor assistant)."""
+    from jarvis.research.trajectory import Trajectory, Turn
+    tr = Trajectory(task="test skipping")
+    tr.turns.append(Turn(role="user", content="hello"))
+    tr.turns.append(Turn(role="system", content="system context"))
+    tr.turns.append(Turn(role="assistant", content="reply"))
+
+    out = to_sharegpt(tr)
+    convs = out["conversations"]
+    assert len(convs) == 2
+    assert convs[0]["from"] == "human"
+    assert convs[1]["from"] == "gpt"
