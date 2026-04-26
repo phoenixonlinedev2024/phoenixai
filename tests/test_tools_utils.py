@@ -376,3 +376,103 @@ def test_spreadsheet_register_tools():
     assert "read_spreadsheet" in names
     assert "write_spreadsheet" in names
     assert "list_sheets" in names
+
+
+# ── _nl_to_cron additional patterns ──────────────────────────────────────────
+
+def test_nl_to_cron_every_minute():
+    assert _nl_to_cron("every minute") == "* * * * *"
+
+
+def test_nl_to_cron_every_n_minutes():
+    assert _nl_to_cron("every 5 minutes") == "*/5 * * * *"
+
+
+def test_nl_to_cron_every_n_hours():
+    assert _nl_to_cron("every 6 hours") == "0 */6 * * *"
+
+
+def test_nl_to_cron_every_morning():
+    assert _nl_to_cron("every morning") == "0 8 * * *"
+
+
+def test_nl_to_cron_every_evening():
+    assert _nl_to_cron("every evening") == "0 18 * * *"
+
+
+def test_nl_to_cron_every_night():
+    assert _nl_to_cron("every night") == "0 22 * * *"
+
+
+def test_nl_to_cron_every_weekend():
+    assert _nl_to_cron("every weekend") == "0 9 * * 6,0"
+
+
+def test_nl_to_cron_every_weekday():
+    assert _nl_to_cron("every weekday") == "0 9 * * 1-5"
+
+
+def test_nl_to_cron_midnight():
+    assert _nl_to_cron("midnight") == "0 0 * * *"
+
+
+def test_nl_to_cron_noon():
+    assert _nl_to_cron("noon") == "0 12 * * *"
+
+
+def test_nl_to_cron_every_week():
+    assert _nl_to_cron("every week") == "0 9 * * 1"
+
+
+def test_nl_to_cron_every_month():
+    assert _nl_to_cron("every month") == "0 9 1 * *"
+
+
+def test_nl_to_cron_every_friday():
+    assert _nl_to_cron("every friday") == "0 9 * * 5"
+
+
+def test_nl_to_cron_every_day_at_with_minutes():
+    assert _nl_to_cron("every day at 14:30") == "30 14 * * *"
+
+
+def test_nl_to_cron_unrecognized_falls_back():
+    out = _nl_to_cron("whenever I feel like it")
+    assert "Could not parse" in out
+
+
+# ── _validate_cron correctness ────────────────────────────────────────────────
+
+def test_validate_cron_valid():
+    out = _validate_cron("0 9 * * 1")
+    assert "Valid" in out
+
+
+def test_validate_cron_hour_out_of_range():
+    out = _validate_cron("0 25 * * *")
+    assert "out of range" in out.lower() or "issues" in out.lower()
+
+
+def test_validate_cron_minute_out_of_range():
+    out = _validate_cron("70 * * * *")
+    assert "out of range" in out.lower() or "issues" in out.lower()
+
+
+def test_validate_cron_too_few_parts():
+    out = _validate_cron("0 9 * *")
+    assert "5 parts" in out or "Invalid" in out
+
+
+def test_validate_cron_too_many_parts():
+    out = _validate_cron("0 9 * * * extra")
+    assert "5 parts" in out or "Invalid" in out
+
+
+def test_validate_cron_wildcard_valid():
+    out = _validate_cron("* * * * *")
+    assert "Valid" in out
+
+
+def test_validate_cron_slash_range():
+    out = _validate_cron("*/15 * * * *")
+    assert "Valid" in out
