@@ -329,3 +329,195 @@ async def test_start_background_handles_cycle_exception(monkeypatch, capsys):
 
     assert call_count[0] >= 1
     assert "Cycle error" in capsys.readouterr().out
+
+
+# ── BenchmarkResult.to_dict() fields ─────────────────────────────────────────
+
+def test_benchmark_result_to_dict_all_fields():
+    result = BenchmarkResult(
+        case_id="test_case",
+        passed=True,
+        score=0.875,
+        latency=0.123,
+        response="The answer is 42",
+        error=None,
+    )
+    d = result.to_dict()
+    assert d["case_id"] == "test_case"
+    assert d["passed"] is True
+    assert d["score"] == 0.875
+    assert d["latency_s"] == 0.123
+    assert "The answer is 42" in d["response_preview"]
+    assert d["error"] is None
+    assert "T" in d["timestamp"]
+
+
+def test_benchmark_result_to_dict_truncates_preview():
+    long_response = "x" * 500
+    result = BenchmarkResult("case", True, 1.0, 0.1, long_response)
+    d = result.to_dict()
+    assert len(d["response_preview"]) == 200
+
+
+def test_benchmark_result_with_error():
+    result = BenchmarkResult("fail_case", False, 0.0, 30.0, "", error="timeout")
+    d = result.to_dict()
+    assert d["passed"] is False
+    assert d["error"] == "timeout"
+
+
+# ── BenchmarkRunner.run_case() score calculation ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_case_partial_keyword_match(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    jarvis = _make_jarvis_mock(chat_reply="The result is 391 approximately")
+    runner = BenchmarkRunner(jarvis)
+    case = BenchmarkCase(
+        id="partial",
+        prompt="What is 17x23?",
+        expected_keywords=["391", "not_present"],
+    )
+    result = await runner.run_case(case)
+    assert result.score == pytest.approx(0.5)
+    assert result.passed is True  # score >= 0.5 threshold passes
+
+
+@pytest.mark.asyncio
+async def test_run_case_all_keywords_found(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    jarvis = _make_jarvis_mock(chat_reply="carol is the shortest person")
+    runner = BenchmarkRunner(jarvis)
+    case = BenchmarkCase(
+        id="full",
+        prompt="Who is shortest?",
+        expected_keywords=["carol", "shortest"],
+    )
+    result = await runner.run_case(case)
+    assert result.score == pytest.approx(1.0)
+    assert result.passed is True
+
+
+@pytest.mark.asyncio
+async def test_run_case_timeout(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    import asyncio
+
+    jarvis = _make_jarvis_mock()
+    jarvis.chat = AsyncMock(side_effect=asyncio.TimeoutError())
+    runner = BenchmarkRunner(jarvis)
+    case = BenchmarkCase("timeout_case", "slow question", ["answer"], timeout=0.01)
+    result = await runner.run_case(case)
+    assert result.passed is False
+    assert result.error == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_run_case_exception(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    jarvis = _make_jarvis_mock()
+    jarvis.chat = AsyncMock(side_effect=RuntimeError("api down"))
+    runner = BenchmarkRunner(jarvis)
+    case = BenchmarkCase("error_case", "question", ["answer"])
+    result = await runner.run_case(case)
+    assert result.passed is False
+    assert "api down" in result.error
+
+
+# ── BenchmarkRunner.trend() ───────────────────────────────────────────────────
+
+def test_trend_insufficient_data(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    jarvis = _make_jarvis_mock()
+    runner = BenchmarkRunner(jarvis)
+    result = runner.trend()
+    assert result["trend"] == "insufficient data"
+    assert result["runs"] == 0
+
+
+def test_trend_improving(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    import json
+
+    jarvis = _make_jarvis_mock()
+    runner = BenchmarkRunner(jarvis)
+    runner._history_path.parent.mkdir(parents=True, exist_ok=True)
+    runner._history_path.write_text(
+        json.dumps({"pass_rate": 0.5, "results": []}) + "\n" +
+        json.dumps({"pass_rate": 0.8, "results": []}) + "\n"
+    )
+    t = runner.trend()
+    assert t["improving"] is True
+    assert t["delta"] == pytest.approx(0.3)
+
+
+def test_trend_declining(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    import json
+
+    jarvis = _make_jarvis_mock()
+    runner = BenchmarkRunner(jarvis)
+    runner._history_path.parent.mkdir(parents=True, exist_ok=True)
+    runner._history_path.write_text(
+        json.dumps({"pass_rate": 0.9, "results": []}) + "\n" +
+        json.dumps({"pass_rate": 0.6, "results": []}) + "\n"
+    )
+    t = runner.trend()
+    assert t["improving"] is False
+    assert t["delta"] == pytest.approx(-0.3)
+
+
+# ── CapabilityEvolver.capability_report() ────────────────────────────────────
+
+def test_capability_report_counts_dynamic_tools():
+    static_tool = MagicMock()
+    static_tool.dynamic = False
+    dynamic_tool = MagicMock()
+    dynamic_tool.dynamic = True
+
+    jarvis = _make_jarvis_mock(
+        tools=[static_tool, dynamic_tool, dynamic_tool],
+        gaps=[{"id": "g1", "description": "need X"}, {"id": "g2", "description": "need Y"}],
+    )
+    evolver = CapabilityEvolver(jarvis)
+    report = evolver.capability_report()
+    assert report["total_tools"] == 3
+    assert report["dynamic_tools"] == 2
+    assert report["open_gaps"] == 2
+    assert "need X" in report["gap_descriptions"]
+
+
+def test_capability_report_no_gaps_no_dynamic():
+    static_tool = MagicMock()
+    static_tool.dynamic = False
+
+    jarvis = _make_jarvis_mock(tools=[static_tool, static_tool], gaps=[])
+    evolver = CapabilityEvolver(jarvis)
+    report = evolver.capability_report()
+    assert report["total_tools"] == 2
+    assert report["dynamic_tools"] == 0
+    assert report["open_gaps"] == 0
+    assert report["gap_descriptions"] == []
+
+
+# ── BUILTIN_BENCHMARKS sanity ─────────────────────────────────────────────────
+
+def test_builtin_benchmarks_count():
+    assert len(BUILTIN_BENCHMARKS) >= 5
+
+
+def test_builtin_benchmarks_all_have_prompts():
+    for case in BUILTIN_BENCHMARKS:
+        assert len(case.prompt) > 5, f"Case '{case.id}' has too short prompt"
+        assert len(case.expected_keywords) >= 1, f"Case '{case.id}' has no keywords"
