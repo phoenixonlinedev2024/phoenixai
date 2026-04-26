@@ -540,3 +540,105 @@ def test_build_registry_swallows_tool_module_exceptions(capsys):
     assert reg is not None
     out = capsys.readouterr().out
     assert "unavailable" in out
+
+
+# ── Tool dataclass ─────────────────────────────────────────────────────────────
+
+def test_tool_dynamic_defaults_to_false():
+    t = _make_tool("mytest")
+    assert t.dynamic is False
+
+
+def test_tool_dynamic_can_be_set_true():
+    t = Tool(
+        name="dynamic_one",
+        description="runtime-created",
+        input_schema={"type": "object"},
+        fn=lambda: "ok",
+        dynamic=True,
+    )
+    assert t.dynamic is True
+
+
+def test_tool_category_stored():
+    t = Tool(
+        name="cat_tool",
+        description="d",
+        input_schema={"type": "object"},
+        fn=lambda: "x",
+        category="networking",
+    )
+    assert t.category == "networking"
+
+
+def test_tool_to_anthropic_structure():
+    t = _make_tool("schema_test")
+    d = t.to_anthropic()
+    assert d["name"] == "schema_test"
+    assert d["description"].startswith("Echo tool")
+    assert "input_schema" in d
+    assert d["input_schema"]["type"] == "object"
+
+
+# ── ToolRegistry.names() ──────────────────────────────────────────────────────
+
+def test_registry_names_returns_all():
+    registry = ToolRegistry()
+    registry.register(_make_tool("x"))
+    registry.register(_make_tool("y"))
+    names = registry.names()
+    assert "x" in names
+    assert "y" in names
+    assert len(names) == 2
+
+
+def test_registry_names_empty():
+    registry = ToolRegistry()
+    assert registry.names() == []
+
+
+# ── Tool.run() with various argument patterns ─────────────────────────────────
+
+def test_tool_run_with_multiple_args():
+    def adder(a=0, b=0):
+        return a + b
+
+    t = Tool(
+        name="adder",
+        description="adds",
+        input_schema={"type": "object", "properties": {"a": {}, "b": {}}},
+        fn=adder,
+    )
+    assert t.run(a=3, b=4) == 7
+
+
+def test_tool_run_no_args():
+    t = Tool(
+        name="noop",
+        description="d",
+        input_schema={"type": "object"},
+        fn=lambda: "static result",
+    )
+    assert t.run() == "static result"
+
+
+# ── ToolRegistry: register overwrites existing tool ────────────────────────────
+
+def test_register_overwrites_existing():
+    registry = ToolRegistry()
+    registry.register(Tool("same_name", "first", {}, fn=lambda: "first"))
+    registry.register(Tool("same_name", "second", {}, fn=lambda: "second"))
+    assert registry.get("same_name").description == "second"
+    assert len(registry.all()) == 1
+
+
+# ── anthropic_tools format ────────────────────────────────────────────────────
+
+def test_anthropic_tools_returns_all_tools():
+    registry = ToolRegistry()
+    for i in range(5):
+        registry.register(_make_tool(f"tool_{i}"))
+    tools = registry.anthropic_tools()
+    assert len(tools) == 5
+    names = {t["name"] for t in tools}
+    assert {f"tool_{i}" for i in range(5)} == names
