@@ -408,3 +408,159 @@ async def test_websocket_send_error_itself_raises_is_silently_ignored():
 
     # The error send was attempted
     assert any(d.get("type") == "error" for d in send_calls)
+
+
+# ── run_daemon (lines 473-564) ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_daemon_basic_flow_and_shutdown(monkeypatch, capsys):
+    """Lines 473-564: run_daemon startup, signal handler registration, and shutdown."""
+    import signal as signal_module
+    from jarvis.config import cfg
+    from jarvis.daemon import run_daemon
+
+    fake_jarvis = MagicMock()
+    fake_jarvis.status = MagicMock(return_value="Status: OK")
+
+    # Disable all optional bots + self-improve so we stay on the simple path
+    monkeypatch.setattr(cfg, "TELEGRAM_TOKEN", "")
+    monkeypatch.setattr(cfg, "DISCORD_TOKEN", "")
+    monkeypatch.setattr(cfg, "SLACK_BOT_TOKEN", "")
+    monkeypatch.setattr(cfg, "SLACK_APP_TOKEN", "")
+    monkeypatch.setattr(cfg, "SIGNAL_PHONE_NUMBER", "")
+    monkeypatch.setattr(cfg, "IRC_SERVER", "")
+    monkeypatch.setattr(cfg, "MATRIX_HOMESERVER", "")
+    monkeypatch.setattr(cfg, "MATRIX_ACCESS_TOKEN", "")
+    monkeypatch.setattr(cfg, "MATTERMOST_URL", "")
+    monkeypatch.setattr(cfg, "MATTERMOST_TOKEN", "")
+    monkeypatch.setattr(cfg, "SELF_IMPROVE_INTERVAL_HOURS", 0)
+
+    fake_server = MagicMock()
+    fake_server.serve = AsyncMock(return_value=None)
+    fake_server.should_exit = False
+
+    fake_uvicorn = MagicMock()
+    fake_uvicorn.Config = MagicMock()
+    fake_uvicorn.Server = MagicMock(return_value=fake_server)
+
+    fake_scheduler = MagicMock()
+    fake_voice = MagicMock()
+    fake_monitor = MagicMock()
+    fake_monitor.start = AsyncMock(return_value=None)
+    fake_monitor.stop = MagicMock()
+
+    registered: dict = {}
+
+    def capture_signal(signum, handler):
+        registered[signum] = handler
+
+    with patch("jarvis.daemon.JarvisScheduler", return_value=fake_scheduler), \
+         patch("jarvis.daemon.VoiceLoop", return_value=fake_voice), \
+         patch("jarvis.daemon.ProactiveMonitor", return_value=fake_monitor), \
+         patch("jarvis.daemon.create_app", return_value=MagicMock()), \
+         patch("jarvis.daemon.uvicorn", fake_uvicorn), \
+         patch("jarvis.daemon.signal") as mock_sig:
+
+        mock_sig.SIGINT = signal_module.SIGINT
+        mock_sig.SIGTERM = signal_module.SIGTERM
+        mock_sig.signal = capture_signal
+
+        await run_daemon(fake_jarvis)
+
+    # Basic startup assertions
+    fake_scheduler.start.assert_called_once()
+    fake_server.serve.assert_called_once()
+    assert "All systems online" in capsys.readouterr().out
+
+    # Cover _shutdown body by invoking the registered signal handler
+    assert signal_module.SIGINT in registered
+    shutdown_fn = registered[signal_module.SIGINT]
+    shutdown_fn(signal_module.SIGINT, None)
+
+    fake_voice.stop.assert_called_once()
+    fake_scheduler.stop.assert_called_once()
+    fake_monitor.stop.assert_called_once()
+    assert fake_server.should_exit is True
+
+
+@pytest.mark.asyncio
+async def test_run_daemon_with_all_bots_and_shutdown(monkeypatch, capsys):
+    """Lines 490-550: all bot branches, self-improve, and _shutdown with non-None tasks."""
+    import signal as signal_module
+    from jarvis.config import cfg
+    from jarvis.daemon import run_daemon
+
+    fake_jarvis = MagicMock()
+    fake_jarvis.status = MagicMock(return_value="")
+
+    # Enable self-improve and every bot so all conditional bodies execute
+    monkeypatch.setattr(cfg, "SELF_IMPROVE_INTERVAL_HOURS", 1)
+    monkeypatch.setattr(cfg, "TELEGRAM_TOKEN", "tg_tok")
+    monkeypatch.setattr(cfg, "DISCORD_TOKEN", "dc_tok")
+    monkeypatch.setattr(cfg, "SLACK_BOT_TOKEN", "sl_bot")
+    monkeypatch.setattr(cfg, "SLACK_APP_TOKEN", "sl_app")
+    monkeypatch.setattr(cfg, "SIGNAL_PHONE_NUMBER", "+1234567890")
+    monkeypatch.setattr(cfg, "IRC_SERVER", "irc.example.com")
+    monkeypatch.setattr(cfg, "MATRIX_HOMESERVER", "https://matrix.example.com")
+    monkeypatch.setattr(cfg, "MATRIX_ACCESS_TOKEN", "mat_tok")
+    monkeypatch.setattr(cfg, "MATTERMOST_URL", "https://mm.example.com")
+    monkeypatch.setattr(cfg, "MATTERMOST_TOKEN", "mm_tok")
+
+    fake_server = MagicMock()
+    fake_server.serve = AsyncMock(return_value=None)
+    fake_server.should_exit = False
+
+    fake_uvicorn = MagicMock()
+    fake_uvicorn.Config = MagicMock()
+    fake_uvicorn.Server = MagicMock(return_value=fake_server)
+
+    fake_monitor = MagicMock()
+    fake_monitor.start = AsyncMock(return_value=None)
+    fake_monitor.stop = MagicMock()
+
+    fake_engine = MagicMock()
+    fake_engine.start_background = AsyncMock(return_value=None)
+
+    def _make_bot_mod(fn_name):
+        mod = MagicMock()
+        setattr(mod, fn_name, AsyncMock(return_value=None))
+        return mod
+
+    fake_si = MagicMock()
+    fake_si.SelfImproveEngine = MagicMock(return_value=fake_engine)
+
+    registered: dict = {}
+
+    def capture_signal(signum, handler):
+        registered[signum] = handler
+
+    with patch.dict(sys.modules, {
+            "jarvis.self_improve": fake_si,
+            "jarvis.bots.telegram_bot": _make_bot_mod("run_telegram_bot"),
+            "jarvis.bots.discord_bot": _make_bot_mod("run_discord_bot"),
+            "jarvis.bots.slack_bot": _make_bot_mod("run_slack_bot"),
+            "jarvis.bots.signal_bot": _make_bot_mod("run_signal_bot"),
+            "jarvis.bots.irc_bot": _make_bot_mod("run_irc_bot"),
+            "jarvis.bots.matrix_bot": _make_bot_mod("run_matrix_bot"),
+            "jarvis.bots.mattermost_bot": _make_bot_mod("run_mattermost_bot"),
+        }), \
+         patch("jarvis.daemon.JarvisScheduler", return_value=MagicMock()), \
+         patch("jarvis.daemon.VoiceLoop", return_value=MagicMock()), \
+         patch("jarvis.daemon.ProactiveMonitor", return_value=fake_monitor), \
+         patch("jarvis.daemon.create_app", return_value=MagicMock()), \
+         patch("jarvis.daemon.uvicorn", fake_uvicorn), \
+         patch("jarvis.daemon.signal") as mock_sig:
+
+        mock_sig.SIGINT = signal_module.SIGINT
+        mock_sig.SIGTERM = signal_module.SIGTERM
+        mock_sig.signal = capture_signal
+
+        await run_daemon(fake_jarvis)
+
+    fake_server.serve.assert_called_once()
+    fake_engine.start_background.assert_called_once()
+
+    # Call _shutdown with non-None tasks to cover line 550 (task.cancel())
+    assert signal_module.SIGINT in registered
+    registered[signal_module.SIGINT](signal_module.SIGINT, None)
+    assert fake_server.should_exit is True
