@@ -214,3 +214,76 @@ def test_load_swallows_corrupt_json(tmp_path, monkeypatch):
     persist.write_text("NOT VALID JSON")
     r = SkillRegistry()
     assert r.all() == []
+
+
+# ── Skill.from_dict() roundtrip ───────────────────────────────────────────────
+
+def test_skill_from_dict_roundtrip():
+    from jarvis.skills.registry import Skill
+    original = Skill(
+        name="code_review",
+        description="Review code for quality",
+        system_prompt="You are a code review expert.",
+        tags=["code", "review"],
+        usage_count=7,
+        created_by="generated",
+    )
+    restored = Skill.from_dict(original.to_dict())
+    assert restored.name == original.name
+    assert restored.description == original.description
+    assert restored.system_prompt == original.system_prompt
+    assert restored.tags == original.tags
+    assert restored.usage_count == original.usage_count
+    assert restored.created_by == original.created_by
+
+
+# ── SkillRegistry.top() edge cases ───────────────────────────────────────────
+
+def test_top_n_larger_than_skill_count_returns_all(registry):
+    from jarvis.skills.registry import Skill
+    registry.register(Skill("s1", "d", "p", usage_count=3))
+    registry.register(Skill("s2", "d", "p", usage_count=1))
+    result = registry.top(n=100)
+    assert len(result) == 2
+
+
+def test_top_zero_returns_empty(registry):
+    from jarvis.skills.registry import Skill
+    registry.register(Skill("s1", "d", "p", usage_count=5))
+    result = registry.top(n=0)
+    assert result == []
+
+
+def test_top_respects_n_limit(registry):
+    from jarvis.skills.registry import Skill
+    for i in range(10):
+        registry.register(Skill(f"skill_{i}", "d", "p", usage_count=i))
+    result = registry.top(n=3)
+    assert len(result) == 3
+    # Highest usage should be first
+    assert result[0].usage_count >= result[1].usage_count >= result[2].usage_count
+
+
+# ── SkillRegistry.search() matches all three fields ──────────────────────────
+
+def test_search_matches_name_description_and_tag(registry):
+    from jarvis.skills.registry import Skill
+    registry.register(Skill("unique_name_xyz", "ordinary desc", "prompt", tags=["ordinary"]))
+    registry.register(Skill("ordinary", "unique_desc_xyz", "prompt", tags=["ordinary"]))
+    registry.register(Skill("other", "ordinary", "prompt", tags=["unique_tag_xyz"]))
+
+    assert any(s.name == "unique_name_xyz" for s in registry.search("unique_name_xyz"))
+    assert any(s.name == "ordinary" for s in registry.search("unique_desc_xyz"))
+    assert any(s.name == "other" for s in registry.search("unique_tag_xyz"))
+
+
+# ── SkillRegistry.summary() includes counts ──────────────────────────────────
+
+def test_summary_counts_correctly(registry):
+    from jarvis.skills.registry import Skill
+    registry.register(Skill("builtin_s", "d", "p", created_by="builtin"))
+    registry.register(Skill("gen_s1", "d", "p", created_by="generated"))
+    registry.register(Skill("gen_s2", "d", "p", created_by="generated"))
+    summary = registry.summary()
+    assert "3 skills" in summary
+    assert "2 auto-generated" in summary

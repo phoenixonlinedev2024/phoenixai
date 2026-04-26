@@ -373,3 +373,32 @@ async def test_monitor_start_runs_loop(capsys):
     out = capsys.readouterr().out
     assert "Started" in out
     assert mon._running is False
+
+
+# ── Export markdown: content verification ─────────────────────────────────────
+
+def test_export_markdown_contains_user_and_jarvis_sections(memory_store, tmp_path):
+    """Verify the markdown output has **You** and **JARVIS** section headers."""
+    from jarvis.export import export_markdown
+    session_id = "format_test"
+    memory_store.save_message(session_id, "user", "What is the weather?")
+    memory_store.save_message(session_id, "assistant", "I'll check the forecast.")
+    out_path = str(tmp_path / "session.md")
+    result = export_markdown(memory_store, session_id, output_path=out_path)
+    assert "Exported 2 messages" in result
+    content = (tmp_path / "session.md").read_text()
+    assert "**You**" in content
+    assert "**JARVIS**" in content
+    assert "What is the weather?" in content
+    assert "I'll check the forecast." in content
+
+
+def test_export_markdown_returns_count(memory_store, tmp_path):
+    """The return message includes the message count."""
+    from jarvis.export import export_markdown
+    session_id = "count_test"
+    for i in range(5):
+        memory_store.save_message(session_id, "user", f"msg {i}")
+    out_path = str(tmp_path / "out.md")
+    result = export_markdown(memory_store, session_id, output_path=out_path)
+    assert "5 messages" in result
