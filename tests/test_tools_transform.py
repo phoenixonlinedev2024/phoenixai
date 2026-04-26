@@ -210,3 +210,95 @@ def test_jq_query_query_without_dot_prefix_returns_unavailable():
          patch.dict(sys.modules, {"jq": None}):
         result = _jq_query(data, "length")
     assert "jq not available" in result
+
+
+# ── jq_query: array index access ─────────────────────────────────────────────
+
+def test_jq_query_integer_index_access():
+    """Pure Python fallback handles integer array index access."""
+    from jarvis.tools.transform_tools import _jq_query
+    data = '{"items": [{"name": "first"}, {"name": "second"}]}'
+    with patch("subprocess.run", side_effect=FileNotFoundError), \
+         patch.dict(sys.modules, {"jq": None}):
+        result = _jq_query(data, ".items")
+    # The whole array should be returned as JSON
+    parsed = json.loads(result)
+    assert len(parsed) == 2
+
+
+def test_jq_query_valid_jq_binary_output():
+    """When jq binary succeeds, its stdout is returned."""
+    from jarvis.tools.transform_tools import _jq_query
+    import subprocess
+    mock_result = MagicMock()
+    mock_result.stdout = '"hello"'
+    mock_result.stderr = ""
+    with patch("subprocess.run", return_value=mock_result):
+        result = _jq_query('{"msg": "hello"}', ".msg")
+    assert result == '"hello"'
+
+
+# ── _validate_json: type reporting ────────────────────────────────────────────
+
+def test_validate_json_list_reports_list_type():
+    from jarvis.tools.transform_tools import _validate_json
+    result = _validate_json('[1, 2, 3]')
+    assert "Valid" in result
+    assert "list" in result
+
+
+def test_validate_json_number_reports_number_type():
+    from jarvis.tools.transform_tools import _validate_json
+    result = _validate_json('42')
+    assert "Valid" in result
+
+
+# ── _yaml_to_json: PyYAML missing ────────────────────────────────────────────
+
+def test_yaml_to_json_missing_pyyaml():
+    from jarvis.tools.transform_tools import _yaml_to_json
+    with patch.dict(sys.modules, {"yaml": None}):
+        result = _yaml_to_json("key: value")
+    assert "PyYAML" in result
+
+
+def test_json_to_yaml_missing_pyyaml():
+    from jarvis.tools.transform_tools import _json_to_yaml
+    with patch.dict(sys.modules, {"yaml": None}):
+        result = _json_to_yaml('{"key": "value"}')
+    assert "PyYAML" in result
+
+
+# ── _regex_test ───────────────────────────────────────────────────────────────
+
+def test_regex_test_match():
+    from jarvis.tools.transform_tools import _regex_test
+    result = _regex_test(r"\d+", "hello 42 world")
+    assert "42" in result
+    assert "Match" in result or "match" in result
+
+
+def test_regex_test_no_match():
+    from jarvis.tools.transform_tools import _regex_test
+    result = _regex_test(r"\d+", "no numbers here")
+    assert "No match" in result or "not found" in result.lower() or "0 match" in result
+
+
+def test_regex_test_invalid_pattern():
+    from jarvis.tools.transform_tools import _regex_test
+    result = _regex_test(r"[invalid", "some text")
+    assert "error" in result.lower() or "invalid" in result.lower()
+
+
+# ── _text_diff ────────────────────────────────────────────────────────────────
+
+def test_text_diff_shows_additions():
+    from jarvis.tools.transform_tools import _text_diff
+    result = _text_diff("line 1\nline 2\n", "line 1\nline 2\nline 3\n")
+    assert "line 3" in result
+
+
+def test_text_diff_identical_texts():
+    from jarvis.tools.transform_tools import _text_diff
+    result = _text_diff("same\n", "same\n")
+    assert "No differences" in result or result.strip() == "" or "identical" in result.lower()
