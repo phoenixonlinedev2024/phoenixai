@@ -307,3 +307,93 @@ def test_to_sharegpt_skips_non_user_non_assistant_turn():
     assert len(convs) == 2
     assert convs[0]["from"] == "human"
     assert convs[1]["from"] == "gpt"
+
+
+# ── Tool-call formatting in to_sharegpt ──────────────────────────────────────
+
+def test_to_sharegpt_with_tool_calls_and_results():
+    tr = Trajectory(task="use tool")
+    tr.add_turn("user", "search for python")
+    tr.add_turn("assistant", "I'll search.",
+                tool_calls=[{"name": "web_search", "input": {"q": "python"}}],
+                tool_results=[{"content": "10 results"}])
+    out = to_sharegpt(tr)
+    gpt_val = out["conversations"][1]["value"]
+    assert "web_search" in gpt_val
+    assert "python" in gpt_val
+    assert "10 results" in gpt_val
+
+
+def test_to_sharegpt_tool_calls_without_content():
+    """Assistant turn with tool_calls but empty text."""
+    tr = Trajectory(task="bare tool")
+    tr.add_turn("user", "do stuff")
+    tr.add_turn("assistant", "",
+                tool_calls=[{"name": "run_shell", "input": {"cmd": "ls"}}],
+                tool_results=[{"content": "file.txt"}])
+    out = to_sharegpt(tr)
+    gpt_val = out["conversations"][1]["value"]
+    assert "run_shell" in gpt_val
+    assert "file.txt" in gpt_val
+
+
+# ── Trajectory.set_outcome backfills only last assistant turn ─────────────────
+
+def test_set_outcome_backfills_last_assistant_only():
+    tr = Trajectory()
+    tr.add_turn("user", "first msg")
+    tr.add_turn("assistant", "first reply")
+    tr.add_turn("user", "second msg")
+    tr.add_turn("assistant", "second reply")
+    tr.set_outcome("success", reward=0.9)
+    rewards = [t.reward for t in tr.turns if t.role == "assistant"]
+    assert rewards[-1] == pytest.approx(0.9)
+    assert rewards[0] is None  # only the last assistant turn gets backfilled
+
+
+# ── TrajectoryCollector.stats() with mixed outcomes ───────────────────────────
+
+def test_collector_stats_mixed_outcomes(collector):
+    s1 = collector.start("s1", task="task a")
+    s1.add_turn("user", "go")
+    s1.add_turn("assistant", "done")
+    collector.complete("s1", outcome="success", reward=1.0)
+
+    s2 = collector.start("s2", task="task b")
+    s2.add_turn("user", "go")
+    collector.complete("s2", outcome="failure", reward=0.0)
+
+    s3 = collector.start("s3", task="task c")
+    s3.add_turn("user", "go")
+    s3.add_turn("assistant", "partial")
+    s3.add_turn("user", "more")
+    s3.add_turn("assistant", "result")
+    collector.complete("s3", outcome="success", reward=0.5)
+
+    stats = collector.stats()
+    assert stats["total"] == 3
+    assert stats["success"] == 2
+    assert stats["failure"] == 1
+    assert abs(stats["avg_reward"] - (1.0 + 0.0 + 0.5) / 3) < 1e-6
+
+
+# ── Compress trajectory boundary: exactly max_turns needs no compression ─────
+
+def test_compress_trajectory_at_exact_max_turns_unchanged():
+    tr = Trajectory(task="precise")
+    for i in range(5):
+        tr.add_turn("user" if i % 2 == 0 else "assistant", f"msg {i}")
+    result = compress_trajectory(tr, max_turns=5)
+    assert result is tr  # returned unchanged
+
+
+def test_compress_trajectory_tool_calls_preserved_in_kept_turns():
+    tr = Trajectory(task="tools")
+    for i in range(25):
+        tr.add_turn("user" if i % 2 == 0 else "assistant", f"msg {i}")
+    # Give tool_calls to last assistant turn (will be kept)
+    tr.turns[-1].tool_calls = [{"name": "web_search", "input": {}}]
+    compressed = compress_trajectory(tr, max_turns=10)
+    # Last turn kept, tool_calls preserved
+    assert compressed.turns[-1].tool_calls[0]["name"] == "web_search"
+    assert compressed.metadata.get("compressed") is True

@@ -246,3 +246,56 @@ def test_store_and_recall_json_fact(memory_store):
     memory_store.store_fact("config", {"key": "value", "count": 42})
     val = memory_store.recall_fact("config")
     assert val == {"key": "value", "count": 42}
+
+
+# ── Fact confidence and source fields ─────────────────────────────────────────
+
+def test_store_fact_custom_confidence_and_source(memory_store):
+    memory_store.store_fact("expertise", "Python", source="user", confidence=0.5)
+    results = memory_store.search_facts("expertise")
+    assert len(results) == 1
+    assert abs(results[0]["confidence"] - 0.5) < 1e-6
+
+
+def test_store_fact_overwrites_preserves_new_confidence(memory_store):
+    memory_store.store_fact("skill", "Python", confidence=0.8)
+    memory_store.store_fact("skill", "Python+", confidence=0.95)
+    results = memory_store.search_facts("skill")
+    assert abs(results[0]["confidence"] - 0.95) < 1e-6
+    assert results[0]["value"] == "Python+"
+
+
+def test_all_facts_sorted_by_key(memory_store):
+    memory_store.store_fact("zzz_last", "c")
+    memory_store.store_fact("aaa_first", "a")
+    memory_store.store_fact("mmm_mid", "b")
+    keys = [f["key"] for f in memory_store.all_facts()]
+    idxs = [keys.index("aaa_first"), keys.index("mmm_mid"), keys.index("zzz_last")]
+    assert idxs == sorted(idxs)
+
+
+def test_search_facts_confidence_in_results(memory_store):
+    memory_store.store_fact("lang", "Rust", confidence=0.75)
+    results = memory_store.search_facts("lang")
+    assert "confidence" in results[0]
+    assert abs(results[0]["confidence"] - 0.75) < 1e-6
+
+
+# ── Conversation history ordering ─────────────────────────────────────────────
+
+def test_get_history_multiple_sessions_isolated(memory_store):
+    memory_store.save_message("sess_a", "user", "hello from A")
+    memory_store.save_message("sess_b", "user", "hello from B")
+    hist_a = memory_store.get_history("sess_a")
+    hist_b = memory_store.get_history("sess_b")
+    assert all("A" in m["content"] for m in hist_a)
+    assert all("B" in m["content"] for m in hist_b)
+
+
+def test_get_history_respects_limit_from_newest(memory_store):
+    for i in range(10):
+        memory_store.save_message("sid_lim", "user", f"msg {i}")
+    hist = memory_store.get_history("sid_lim", limit=3)
+    assert len(hist) == 3
+    # Should be last 3 messages in chronological order
+    assert hist[-1]["content"] == "msg 9"

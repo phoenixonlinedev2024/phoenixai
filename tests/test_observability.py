@@ -175,3 +175,52 @@ def test_snapshot_uptime_increases(reg):
 def test_counter_inc_by_large_amount(reg):
     reg.inc("bulk", 1000)
     assert reg.counter("bulk").value == 1000
+
+
+# ── Histogram min/max and single-observation statistics ────────────────────────
+
+def test_histogram_single_observation(reg):
+    reg.observe("single", 42.0)
+    h = reg.histogram("single")
+    assert h.count == 1
+    assert h.avg == pytest.approx(42.0)
+    assert h.p95 == pytest.approx(42.0)
+    assert h.p99 == pytest.approx(42.0)
+    assert h.total == pytest.approx(42.0)
+
+
+def test_histogram_uniform_distribution(reg):
+    for i in range(1, 11):
+        reg.observe("uniform", float(i))
+    h = reg.histogram("uniform")
+    assert h.count == 10
+    assert h.avg == pytest.approx(5.5)
+    assert h.total == pytest.approx(55.0)
+
+
+def test_counter_increment_by_zero(reg):
+    reg.inc("zero_inc", 0)
+    assert reg.counter("zero_inc").value == 0
+
+
+def test_counter_large_increment(reg):
+    reg.inc("big", 1_000_000)
+    assert reg.counter("big").value == 1_000_000
+
+
+def test_prometheus_text_includes_all_registered_metrics(reg):
+    reg.inc("req_count")
+    reg.observe("resp_time", 0.1)
+    text = reg.prometheus_text()
+    assert "req_count" in text
+    assert "resp_time" in text
+
+
+def test_snapshot_histogram_fields_present(reg):
+    reg.observe("lat", 0.5)
+    snap = reg.snapshot()
+    h = snap["histograms"]["lat"]
+    assert "count" in h
+    assert "avg_ms" in h
+    assert "p95_ms" in h
+    assert "p99_ms" in h

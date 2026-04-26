@@ -339,3 +339,76 @@ async def test_health_check_swallows_provider_exception(monkeypatch):
     monkeypatch.setattr(router, "_anthropic", _raise)
     result = await router.health_check()
     assert result["anthropic"] is False
+
+
+# ── Client caching ────────────────────────────────────────────────────────────
+
+def test_openrouter_client_reused(monkeypatch):
+    """_openrouter() returns the same object on repeated calls."""
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENROUTER_API_KEY", "key")
+    router = ProviderRouter()
+    c1 = router._openrouter()
+    c2 = router._openrouter()
+    assert c1 is not None
+    assert c1 is c2
+
+
+def test_openai_compat_client_reused(monkeypatch):
+    """_openai_compat() returns the same object on repeated calls."""
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENAI_COMPAT_BASE_URL", "http://localhost:8080")
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENAI_COMPAT_API_KEY", "key")
+    router = ProviderRouter()
+    c1 = router._openai_compat()
+    c2 = router._openai_compat()
+    assert c1 is not None
+    assert c1 is c2
+
+
+# ── Full 4-provider fallback chain ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_message_full_fallback_chain(monkeypatch):
+    """anthropic→openrouter→openai_compat all fail; ollama succeeds."""
+    monkeypatch.setattr("jarvis.providers.router.cfg.MAX_TOKENS", 128)
+    monkeypatch.setattr("jarvis.providers.router.cfg.CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENROUTER_MODEL", "llama")
+    monkeypatch.setattr("jarvis.providers.router.cfg.OPENAI_COMPAT_MODEL", "local-model")
+    monkeypatch.setattr("jarvis.providers.router.cfg.OLLAMA_MODEL", "mistral")
+    monkeypatch.setattr("jarvis.providers.router.cfg.PROVIDER_ORDER",
+                        ["anthropic", "openrouter", "openai_compat", "ollama"])
+
+    router = ProviderRouter()
+    fail_client = MagicMock()
+    fail_client.messages.create = AsyncMock(side_effect=RuntimeError("fail"))
+    router._clients["anthropic"] = fail_client
+
+    fail_or = MagicMock()
+    fail_or.chat = MagicMock()
+    fail_or.chat.completions = MagicMock()
+    fail_or.chat.completions.create = AsyncMock(side_effect=RuntimeError("or fail"))
+    router._clients["openrouter"] = fail_or
+
+    fail_oa = MagicMock()
+    fail_oa.chat = MagicMock()
+    fail_oa.chat.completions = MagicMock()
+    fail_oa.chat.completions.create = AsyncMock(side_effect=RuntimeError("oa fail"))
+    router._clients["openai_compat"] = fail_oa
+
+    ollama_resp = {"message": {"content": "ollama wins"}}
+    good_ollama = MagicMock()
+    good_ollama.chat = AsyncMock(return_value=ollama_resp)
+    router._clients["ollama"] = good_ollama
+
+    resp = await router.create_message([{"role": "user", "content": "hi"}])
+    assert resp.content[0].text == "ollama wins"
+
+
+# ── to_openai_messages with non-dict content block ────────────────────────────
+
+def test_to_openai_messages_non_dict_content_block():
+    """List content with a non-dict item falls back to str()."""
+    msgs = [{"role": "user", "content": ["plain string item", {"content": "nested"}]}]
+    result = _to_openai_messages(msgs, system="")
+    assert result[0]["role"] == "user"
+    assert "plain string item" in result[0]["content"]
+    assert "nested" in result[0]["content"]
