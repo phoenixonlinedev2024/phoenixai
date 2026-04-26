@@ -402,3 +402,112 @@ def test_export_markdown_returns_count(memory_store, tmp_path):
     out_path = str(tmp_path / "out.md")
     result = export_markdown(memory_store, session_id, output_path=out_path)
     assert "5 messages" in result
+
+
+# ── export_markdown: file content verification ─────────────────────────────────
+
+def test_export_markdown_file_has_session_header(memory_store, tmp_path):
+    """The exported file contains session ID in the header."""
+    session_id = "my-session-123"
+    memory_store.save_message(session_id, "user", "hello")
+    out_path = str(tmp_path / "header_test.md")
+    export_markdown(memory_store, session_id, output_path=out_path)
+    content = (tmp_path / "header_test.md").read_text()
+    assert session_id in content
+    assert "JARVIS Session" in content
+
+
+def test_export_markdown_separator_between_messages(memory_store, tmp_path):
+    """Each message is separated by ---."""
+    session_id = "sep-test"
+    memory_store.save_message(session_id, "user", "question one")
+    memory_store.save_message(session_id, "assistant", "answer one")
+    out_path = str(tmp_path / "sep.md")
+    export_markdown(memory_store, session_id, output_path=out_path)
+    content = (tmp_path / "sep.md").read_text()
+    assert content.count("---") >= 2
+
+
+def test_export_markdown_uses_auto_filename(memory_store, tmp_path, monkeypatch):
+    """When output_path is None, auto-generates a filename."""
+    import os
+    session_id = "auto-file"
+    memory_store.save_message(session_id, "user", "auto test")
+    monkeypatch.chdir(tmp_path)
+    result = export_markdown(memory_store, session_id, output_path=None)
+    assert "jarvis_session_" in result
+    assert ".md" in result
+
+
+# ── ProactiveMonitor edge cases ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_monitor_check_all_no_targets():
+    """_check_all() with no monitor targets does nothing."""
+    jarvis = MagicMock()
+    jarvis.memory.get_monitor_targets = MagicMock(return_value=[])
+    mon = ProactiveMonitor(jarvis)
+    await mon._check_all()  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_monitor_check_target_unknown_type_skips():
+    """Target with type other than 'url' or 'file' returns early."""
+    jarvis = MagicMock()
+    mon = ProactiveMonitor(jarvis)
+    target = {
+        "name": "unknown",
+        "target_type": "database",  # not url or file
+        "target": "some_target",
+        "action": "notify",
+        "last_hash": None,
+    }
+    await mon._check_target(target)  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_monitor_check_file_target_nonexistent(tmp_path):
+    """File target that doesn't exist returns early without error."""
+    jarvis = MagicMock()
+    mon = ProactiveMonitor(jarvis)
+    target = {
+        "name": "missing-file",
+        "target_type": "file",
+        "target": str(tmp_path / "nonexistent.txt"),
+        "action": "notify",
+        "last_hash": None,
+    }
+    await mon._check_target(target)  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_monitor_check_file_no_hash_change(tmp_path):
+    """File target with matching last_hash — no action triggered."""
+    file_path = tmp_path / "watched.txt"
+    file_path.write_text("same content", encoding="utf-8")
+    import hashlib
+    content_hash = hashlib.sha256("same content".encode()).hexdigest()
+
+    jarvis = MagicMock()
+    jarvis.memory.update_monitor_hash = MagicMock()
+    mon = ProactiveMonitor(jarvis)
+    target = {
+        "name": "stable-file",
+        "target_type": "file",
+        "target": str(file_path),
+        "action": "notify",
+        "last_hash": content_hash,  # same hash → no change
+    }
+    await mon._check_target(target)
+    # No chat() triggered since content hasn't changed
+    jarvis.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_monitor_hash_static_method():
+    """_hash() produces consistent SHA-256 hex digest."""
+    h1 = ProactiveMonitor._hash("hello world")
+    h2 = ProactiveMonitor._hash("hello world")
+    assert h1 == h2
+    assert len(h1) == 64  # SHA-256 hex digest length
+    assert h1 != ProactiveMonitor._hash("different content")

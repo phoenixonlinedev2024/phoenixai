@@ -412,3 +412,104 @@ def test_to_openai_messages_non_dict_content_block():
     assert result[0]["role"] == "user"
     assert "plain string item" in result[0]["content"]
     assert "nested" in result[0]["content"]
+
+
+# ── _WrappedResponse structure ────────────────────────────────────────────────
+
+def test_wrapped_response_content_block():
+    """_WrappedResponse has content list with one text block."""
+    resp = _WrappedResponse("hello world")
+    assert len(resp.content) == 1
+    assert resp.content[0].text == "hello world"
+    assert resp.content[0].type == "text"
+    assert resp.stop_reason == "end_turn"
+
+
+def test_wrapped_response_empty_text():
+    resp = _WrappedResponse("")
+    assert resp.content[0].text == ""
+
+
+# ── _wrap_openai ──────────────────────────────────────────────────────────────
+
+def test_wrap_openai_extracts_message_content():
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "openai response"
+    wrapped = _wrap_openai(mock_resp)
+    assert wrapped.content[0].text == "openai response"
+
+
+def test_wrap_openai_none_content_becomes_empty():
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = None
+    wrapped = _wrap_openai(mock_resp)
+    assert wrapped.content[0].text == ""
+
+
+# ── _wrap_ollama ──────────────────────────────────────────────────────────────
+
+def test_wrap_ollama_dict_response():
+    resp = {"message": {"content": "ollama says hello"}}
+    wrapped = _wrap_ollama(resp)
+    assert wrapped.content[0].text == "ollama says hello"
+
+
+def test_wrap_ollama_non_dict_response():
+    """Non-dict response falls back to str()."""
+    resp = "plain string response"
+    wrapped = _wrap_ollama(resp)
+    assert "plain string response" in wrapped.content[0].text
+
+
+def test_wrap_ollama_empty_message():
+    resp = {"message": {}}
+    wrapped = _wrap_ollama(resp)
+    assert wrapped.content[0].text == ""
+
+
+def test_wrap_ollama_missing_message_key():
+    resp = {}
+    wrapped = _wrap_ollama(resp)
+    assert wrapped.content[0].text == ""
+
+
+# ── ProviderRouter.health_check() ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_health_check_anthropic_ok(monkeypatch):
+    """health_check anthropic succeeds when client returns normally."""
+    router = ProviderRouter()
+
+    def _ok():
+        return MagicMock()
+
+    monkeypatch.setattr(router, "_anthropic", _ok)
+    result = await router.health_check()
+    assert result["anthropic"] is True
+
+
+# ── _to_openai_messages dict content with content key ─────────────────────────
+
+def test_to_openai_messages_dict_content_with_content_key():
+    """Dict block with 'content' key is extracted correctly."""
+    msgs = [{"role": "user", "content": [{"content": "hello from block"}]}]
+    result = _to_openai_messages(msgs, system="")
+    assert result[0]["content"] == "hello from block"
+
+
+def test_to_openai_messages_multiple_content_blocks():
+    """Multiple dict blocks joined by space."""
+    msgs = [{"role": "user", "content": [
+        {"content": "first"},
+        {"content": "second"},
+    ]}]
+    result = _to_openai_messages(msgs, system="")
+    assert "first" in result[0]["content"]
+    assert "second" in result[0]["content"]
+
+
+def test_to_openai_messages_list_with_string_content():
+    """String content passed through as-is."""
+    msgs = [{"role": "user", "content": "simple string"}]
+    result = _to_openai_messages(msgs, system="")
+    assert result[0]["content"] == "simple string"
