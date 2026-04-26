@@ -397,3 +397,163 @@ def test_compress_trajectory_tool_calls_preserved_in_kept_turns():
     # Last turn kept, tool_calls preserved
     assert compressed.turns[-1].tool_calls[0]["name"] == "web_search"
     assert compressed.metadata.get("compressed") is True
+
+
+# ── TrajectoryCollector edge cases ────────────────────────────────────────────
+
+def test_collector_complete_no_active_session(collector):
+    """complete() returns error message when session not in _active."""
+    msg = collector.complete("nonexistent-session")
+    assert "No active trajectory" in msg
+
+
+def test_collector_get_returns_none_for_unknown(collector):
+    assert collector.get("no-such-session") is None
+
+
+def test_collector_record_turn_ignored_when_no_session(collector):
+    """record_turn() is a no-op when the session hasn't been started."""
+    collector.record_turn("ghost-session", "user", "hello")
+    # No exception, no trajectory created
+    assert collector.get("ghost-session") is None
+
+
+def test_collector_load_all_skips_corrupt_json(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    coll = TrajectoryCollector()
+    # Write corrupt JSON to the trajectories dir
+    (tmp_path / "trajectories" / "bad.json").write_text("NOT JSON", encoding="utf-8")
+    loaded = coll.load_all()
+    assert loaded == []
+
+
+def test_collector_stats_empty_dir(collector):
+    stats = collector.stats()
+    assert stats["total"] == 0
+    assert stats["success"] == 0
+    assert stats["failure"] == 0
+    assert stats["avg_reward"] == 0.0
+    assert stats["avg_turns"] == 0.0
+
+
+def test_collector_start_returns_trajectory(collector):
+    traj = collector.start("s99", task="my task")
+    assert traj.session_id == "s99"
+    assert traj.task == "my task"
+    assert collector.get("s99") is traj
+
+
+def test_collector_complete_saves_file(collector, tmp_path):
+    collector.start("save-test", task="save it")
+    collector.record_turn("save-test", "user", "hello")
+    msg = collector.complete("save-test", outcome="success", reward=1.0)
+    assert "saved" in msg.lower()
+    files = list((tmp_path / "trajectories").glob("*.json"))
+    assert len(files) == 1
+
+
+def test_collector_load_all_restores_turns(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    coll = TrajectoryCollector()
+    coll.start("restore-test", task="roundtrip")
+    coll.record_turn("restore-test", "user", "ping")
+    coll.record_turn("restore-test", "assistant", "pong")
+    coll.complete("restore-test", reward=0.8)
+
+    coll2 = TrajectoryCollector()
+    all_traj = coll2.load_all()
+    assert len(all_traj) == 1
+    assert len(all_traj[0].turns) == 2
+    assert all_traj[0].turns[0].content == "ping"
+
+
+# ── export_dataset with compression ──────────────────────────────────────────
+
+def test_export_dataset_with_compression(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    coll = TrajectoryCollector()
+    coll.start("long-session", task="compress me")
+    for i in range(30):
+        coll.record_turn("long-session", "user" if i % 2 == 0 else "assistant", f"turn {i}")
+    coll.complete("long-session", outcome="success", reward=1.0)
+
+    out_path = str(tmp_path / "compressed.jsonl")
+    msg = export_dataset(coll, output_path=out_path, min_reward=0.5, compress=True, max_turns=10)
+    assert "Exported 1" in msg
+    record = json.loads(Path(out_path).read_text().strip())
+    # Compressed: 10 turns = 10 conversations
+    assert len(record["conversations"]) <= 10
+
+
+def test_export_atropos_rewards_in_messages(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    coll = TrajectoryCollector()
+    coll.start("atropos-test")
+    coll.record_turn("atropos-test", "user", "prompt")
+    coll.record_turn("atropos-test", "assistant", "response")
+    coll.complete("atropos-test", reward=0.7)
+
+    out_path = str(tmp_path / "atropos2.jsonl")
+    export_atropos_format(coll, output_path=out_path)
+    record = json.loads(Path(out_path).read_text().strip())
+    assert record["final_reward"] == pytest.approx(0.7)
+    assert len(record["messages"]) == 2
+    assert record["messages"][0]["role"] == "user"
+    assert record["messages"][1]["reward"] == pytest.approx(0.7)
+
+
+# ── Trajectory.to_dict includes tool calls and results ───────────────────────
+
+def test_trajectory_to_dict_includes_tool_calls():
+    tr = Trajectory(task="tool task")
+    tr.add_turn("user", "use tools")
+    tr.add_turn("assistant", "sure",
+                tool_calls=[{"name": "search", "input": {"q": "test"}}],
+                tool_results=[{"content": "result data"}])
+    d = tr.to_dict()
+    turn_d = d["turns"][1]
+    assert turn_d["tool_calls"][0]["name"] == "search"
+    assert turn_d["tool_results"][0]["content"] == "result data"
+
+
+def test_trajectory_to_dict_timestamp_is_iso():
+    tr = Trajectory()
+    d = tr.to_dict()
+    assert "T" in d["timestamp"]  # ISO 8601 format
+    assert "Z" in d["timestamp"] or "+" in d["timestamp"]  # timezone
+
+
+# ── to_sharegpt with multiple tool calls ─────────────────────────────────────
+
+def test_to_sharegpt_multiple_tool_calls_in_one_turn():
+    tr = Trajectory(task="multi tools")
+    tr.add_turn("user", "do two things")
+    tr.add_turn("assistant", "calling both",
+                tool_calls=[
+                    {"name": "tool_a", "input": {"x": 1}},
+                    {"name": "tool_b", "input": {"y": 2}},
+                ],
+                tool_results=[
+                    {"content": "result A"},
+                    {"content": "result B"},
+                ])
+    out = to_sharegpt(tr)
+    val = out["conversations"][1]["value"]
+    assert "tool_a" in val
+    assert "tool_b" in val
+    assert "result A" in val
+    assert "result B" in val
+
+
+def test_to_sharegpt_user_only_trajectory():
+    """Trajectory with only user turns produces only human entries."""
+    tr = Trajectory(task="questions only")
+    tr.add_turn("user", "question 1")
+    tr.add_turn("user", "question 2")
+    out = to_sharegpt(tr)
+    assert all(c["from"] == "human" for c in out["conversations"])
+    assert len(out["conversations"]) == 2

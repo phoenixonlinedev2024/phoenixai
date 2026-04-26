@@ -356,3 +356,140 @@ def test_scheduled_job_to_dict_all_fields():
     assert d["run_count"] == 10
     assert d["error_count"] == 2
     assert d["tags"] == ["infra", "nightly"]
+
+
+# ── TaskQueue history and run_worker ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_task_queue_history_recorded_after_run():
+    from jarvis.scheduling import TaskQueue, Priority
+    import asyncio
+    queue = TaskQueue()
+    results = []
+
+    async def my_fn():
+        results.append("ran")
+
+    tid = await queue.enqueue(my_fn, name="hist-test", priority=Priority.NORMAL)
+
+    worker = asyncio.create_task(queue.run_worker())
+    await queue._queue.join()
+    worker.cancel()
+
+    hist = queue.history()
+    assert len(hist) == 1
+    assert hist[0]["name"] == "hist-test"
+    assert hist[0]["status"] == "success"
+    assert "ran" in results
+
+
+@pytest.mark.asyncio
+async def test_task_queue_error_recorded_in_history():
+    from jarvis.scheduling import TaskQueue, Priority
+    import asyncio
+    queue = TaskQueue()
+
+    async def bad_fn():
+        raise ValueError("oops")
+
+    await queue.enqueue(bad_fn, name="bad-task", priority=Priority.HIGH)
+    worker = asyncio.create_task(queue.run_worker())
+    await queue._queue.join()
+    worker.cancel()
+
+    hist = queue.history()
+    assert "error" in hist[0]["status"]
+    assert "oops" in hist[0]["status"]
+
+
+def test_task_queue_pending_count():
+    from jarvis.scheduling import TaskQueue
+    import asyncio
+    queue = TaskQueue()
+    assert queue.pending == 0
+
+
+def test_task_queue_history_limit():
+    from jarvis.scheduling import TaskQueue
+    queue = TaskQueue()
+    # Manually add 10 history entries
+    for i in range(10):
+        queue._history.append({"id": str(i), "status": "success", "name": f"t{i}",
+                                "started": "t", "finished": "t"})
+    # history(limit=3) returns last 3
+    assert len(queue.history(limit=3)) == 3
+    assert queue.history(limit=3)[-1]["name"] == "t9"
+
+
+# ── NLScheduler list_jobs and remove ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_add_and_list():
+    from jarvis.scheduling import NLScheduler, Priority
+    sched = NLScheduler(_fake_jarvis())
+    j1 = await sched.add("nightly_backup", "every day", "backup", tags=["infra"])
+    j2 = await sched.add("hourly_report", "every hour", "report", priority=Priority.HIGH)
+    jobs = sched.list_jobs()
+    assert len(jobs) == 2
+    # Higher priority job first
+    assert jobs[0]["name"] == "hourly_report"
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_list_jobs_filter_by_tag():
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    await sched.add("j1", "every hour", "p", tags=["alpha"])
+    await sched.add("j2", "every hour", "p", tags=["beta"])
+    alpha_jobs = sched.list_jobs(tag="alpha")
+    assert len(alpha_jobs) == 1
+    assert alpha_jobs[0]["name"] == "j1"
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_remove_job():
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    job = await sched.add("to-delete", "every hour", "do it")
+    assert sched.remove(job.id) is True
+    assert sched.remove(job.id) is False  # already removed
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_run_now_unknown_job():
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    result = await sched.run_now("nonexistent-job-id")
+    assert "not found" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_run_now_success():
+    from jarvis.scheduling import NLScheduler
+    from unittest.mock import AsyncMock
+    j = _fake_jarvis()
+    j.chat = AsyncMock(return_value="task complete")
+    sched = NLScheduler(j)
+    job = await sched.add("run-me", "every hour", "do the thing")
+    result = await sched.run_now(job.id)
+    assert result == "task complete"
+    assert job.run_count == 1
+    assert job.last_status == "success"
+
+
+# ── Priority enum values ──────────────────────────────────────────────────────
+
+def test_priority_values_ordering():
+    from jarvis.scheduling import Priority
+    assert Priority.LOW < Priority.NORMAL < Priority.HIGH < Priority.CRITICAL
+
+
+def test_scheduled_job_defaults():
+    from jarvis.scheduling import ScheduledJob, Priority
+    job = ScheduledJob()
+    assert job.enabled is True
+    assert job.priority == Priority.NORMAL
+    assert job.max_retries == 3
+    assert job.run_count == 0
+    assert job.error_count == 0
+    assert job.tags == []

@@ -147,3 +147,86 @@ def test_build_context_prompt_caps_facts_at_20(memory_store):
     # Count the fact bullets
     fact_lines = [line for line in out.splitlines() if line.startswith("  - key_")]
     assert len(fact_lines) == 20
+
+
+# ── reflect() stores lessons and facts ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reflect_stores_lessons_and_facts(memory_store, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "LEARNING_ENABLED", True)
+
+    client = MagicMock()
+    reply = MagicMock()
+    reply.content = [MagicMock(text='{"lessons": ["validate inputs", "cache results"], "facts": {"language": "Python", "os": "Linux"}, "capability_gaps": []}')]
+    client.messages.create = AsyncMock(return_value=reply)
+
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "hi"}], client)
+
+    assert result["lessons"] == ["validate inputs", "cache results"]
+    # Facts should be stored in memory
+    assert memory_store.recall_fact("language") == "Python"
+    assert memory_store.recall_fact("os") == "Linux"
+    # Lessons should be stored
+    lessons = memory_store.get_lessons(limit=10)
+    assert any("validate inputs" in l for l in lessons)
+
+
+@pytest.mark.asyncio
+async def test_reflect_strips_code_fence(memory_store, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "LEARNING_ENABLED", True)
+
+    client = MagicMock()
+    payload = '{"lessons": ["lesson from fence"], "facts": {}, "capability_gaps": []}'
+    fenced = f"```json\n{payload}\n```"
+    reply = MagicMock()
+    reply.content = [MagicMock(text=fenced)]
+    client.messages.create = AsyncMock(return_value=reply)
+
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "test"}], client)
+    assert result["lessons"] == ["lesson from fence"]
+
+
+@pytest.mark.asyncio
+async def test_reflect_capability_gaps_ignored_no_crash(memory_store, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "LEARNING_ENABLED", True)
+
+    client = MagicMock()
+    reply = MagicMock()
+    reply.content = [MagicMock(text='{"lessons": [], "facts": {}, "capability_gaps": ["need PDF parsing"]}')]
+    client.messages.create = AsyncMock(return_value=reply)
+
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "test"}], client)
+    assert result["capability_gaps"] == ["need PDF parsing"]
+
+
+# ── build_context_prompt includes lessons cap ────────────────────────────────
+
+def test_build_context_prompt_caps_lessons(memory_store):
+    for i in range(20):
+        memory_store.store_lesson(f"lesson number {i}")
+    engine = LearningEngine(memory_store)
+    out = engine.build_context_prompt()
+    lesson_lines = [line for line in out.splitlines() if line.startswith("  - lesson")]
+    assert len(lesson_lines) == 10  # get_lessons(limit=10)
+
+
+def test_build_context_prompt_only_facts(memory_store):
+    memory_store.store_fact("theme", "dark mode")
+    engine = LearningEngine(memory_store)
+    out = engine.build_context_prompt()
+    assert "Known Facts" in out
+    assert "Lessons Learned" not in out
+
+
+def test_build_context_prompt_only_lessons(memory_store):
+    memory_store.store_lesson("prefer short responses")
+    engine = LearningEngine(memory_store)
+    out = engine.build_context_prompt()
+    assert "Lessons Learned" in out
+    assert "Known Facts" not in out
