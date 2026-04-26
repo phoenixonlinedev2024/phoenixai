@@ -299,3 +299,52 @@ def test_get_history_respects_limit_from_newest(memory_store):
     assert len(hist) == 3
     # Should be last 3 messages in chronological order
     assert hist[-1]["content"] == "msg 9"
+
+
+# ── Lessons ordering and limit ────────────────────────────────────────────────
+
+def test_get_lessons_newest_first(memory_store):
+    memory_store.store_lesson("first lesson", context="session1")
+    memory_store.store_lesson("second lesson", context="session2")
+    memory_store.store_lesson("third lesson", context="session3")
+    lessons = memory_store.get_lessons(limit=10)
+    assert "third lesson" in lessons[0]
+    assert "first lesson" in lessons[-1]
+
+
+def test_get_lessons_respects_limit(memory_store):
+    for i in range(10):
+        memory_store.store_lesson(f"lesson {i}")
+    lessons = memory_store.get_lessons(limit=3)
+    assert len(lessons) == 3
+
+
+# ── Monitor target CRUD ───────────────────────────────────────────────────────
+
+def test_monitor_target_enabled_by_default(memory_store):
+    memory_store.add_monitor_target("My Check", "url", "https://example.com", "notify")
+    targets = memory_store.get_monitor_targets()
+    t = next(t for t in targets if t["name"] == "My Check")
+    assert t["enabled"] == 1
+
+
+def test_monitor_target_list_returns_all(memory_store):
+    memory_store.add_monitor_target("T1", "file", "/path/a", "log")
+    memory_store.add_monitor_target("T2", "url", "http://b.com", "alert")
+    targets = memory_store.get_monitor_targets()
+    names = {t["name"] for t in targets}
+    assert {"T1", "T2"} <= names
+
+
+# ── SQL injection safety ──────────────────────────────────────────────────────
+
+def test_search_facts_sql_injection_safe(memory_store):
+    memory_store.store_fact("safe_key", "safe_value")
+    results = memory_store.search_facts("' OR '1'='1")
+    assert results == []
+
+
+def test_store_fact_with_single_quotes_in_value(memory_store):
+    memory_store.store_fact("greeting", "it's a beautiful day")
+    val = memory_store.recall_fact("greeting")
+    assert val == "it's a beautiful day"

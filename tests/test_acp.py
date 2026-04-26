@@ -229,3 +229,88 @@ def test_unsubscribe_nonexistent_topic_is_noop(bus):
 
     bus.unsubscribe("never_subscribed_topic", handler)
     # No exception raised — test passes if we reach here
+
+
+# ── Stats subscribers dict ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_stats_subscribers_counts(bus):
+    async def h1(msg): pass
+    async def h2(msg): pass
+    bus.subscribe("ch1", h1)
+    bus.subscribe("ch1", h2)
+    bus.subscribe("ch2", h1)
+    s = bus.stats()
+    assert s["subscribers"]["ch1"] == 2
+    assert s["subscribers"]["ch2"] == 1
+
+
+# ── history() limit slices from the end ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_history_limit_one_returns_most_recent(bus):
+    """msgs[-1:] returns the single most recent message."""
+    await bus.publish("x", payload="first")
+    await bus.publish("x", payload="second")
+    h = bus.history(limit=1)
+    assert len(h) == 1
+    assert h[0]["payload"] == "second"
+
+
+# ── unsubscribe removes the handler cleanly ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_unsubscribe_removes_specific_handler_only(bus):
+    calls_a, calls_b = [], []
+
+    async def ha(msg): calls_a.append(msg)
+    async def hb(msg): calls_b.append(msg)
+
+    bus.subscribe("ch", ha)
+    bus.subscribe("ch", hb)
+    bus.unsubscribe("ch", ha)
+
+    await bus.publish("ch", payload="ping")
+    assert len(calls_a) == 0  # removed
+    assert len(calls_b) == 1  # still subscribed
+
+
+# ── wildcard + specific handler both receive the message ─────────────────────
+
+@pytest.mark.asyncio
+async def test_wildcard_and_specific_both_receive(bus):
+    specific_calls, wildcard_calls = [], []
+
+    async def specific(msg): specific_calls.append(msg)
+    async def wildcard(msg): wildcard_calls.append(msg)
+
+    bus.subscribe("alerts.high", specific)
+    bus.subscribe("*", wildcard)
+    await bus.publish("alerts.high", payload="critical error")
+
+    assert len(specific_calls) == 1
+    assert len(wildcard_calls) == 1
+    assert specific_calls[0].payload == "critical error"
+
+
+# ── publish with no subscribers still records history ────────────────────────
+
+@pytest.mark.asyncio
+async def test_publish_no_subscribers_still_records_history(bus):
+    await bus.publish("orphan.topic", payload="lone msg")
+    h = bus.history(topic="orphan.topic")
+    assert len(h) == 1
+    assert h[0]["payload"] == "lone msg"
+
+
+# ── to_dict includes all fields ───────────────────────────────────────────────
+
+def test_message_to_dict_all_fields():
+    from jarvis.acp import ACPMessage
+    msg = ACPMessage(topic="events.auth", payload={"user": "alice"}, sender="auth-svc")
+    d = msg.to_dict()
+    assert d["topic"] == "events.auth"
+    assert d["payload"] == {"user": "alice"}
+    assert d["sender"] == "auth-svc"
+    assert len(d["id"]) == 8  # hex[:8]
+    assert "T" in d["timestamp"]  # ISO format
