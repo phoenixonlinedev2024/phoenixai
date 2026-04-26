@@ -484,3 +484,50 @@ def test_geo_weather_register_tools_populates_registry():
     register_tools(registry)
     for name in ("geocode", "get_weather", "read_rss", "ocr_image", "analyse_logs"):
         assert registry.get(name) is not None
+
+
+# ── _log_analyse: case-insensitive error detection ────────────────────────────
+
+def test_log_analyse_case_insensitive_error_detection(tmp_path):
+    log = tmp_path / "mixed.log"
+    log.write_text("ERROR fatal crash\nWARNING mild issue\nEXCEPTION null pointer\n")
+    out = _log_analyse(str(log))
+    assert "Errors: 2" in out  # ERROR + EXCEPTION counted
+
+
+def test_log_analyse_no_errors(tmp_path):
+    log = tmp_path / "clean.log"
+    log.write_text("INFO all good\nDEBUG processing\nINFO done\n")
+    out = _log_analyse(str(log))
+    assert "Errors: 0" in out
+
+
+def test_log_analyse_empty_file(tmp_path):
+    log = tmp_path / "empty.log"
+    log.write_text("")
+    out = _log_analyse(str(log))
+    assert "Total lines: 0" in out
+    assert "Errors: 0" in out
+
+
+def test_log_analyse_regex_pattern_no_match(tmp_path):
+    log = tmp_path / "miss.log"
+    log.write_text("line1\nline2\nline3\n")
+    out = _log_analyse(str(log), pattern="ZZZMATCH")
+    assert "Total lines: 0" in out
+
+
+# ── _geocode: aiohttp unavailable ────────────────────────────────────────────
+
+def test_geocode_missing_requests(monkeypatch):
+    with patch.dict(sys.modules, {"requests": None}):
+        out = _geocode("Paris")
+    assert "error" in out.lower() or "not installed" in out.lower() or "Geocode error" in out
+
+
+# ── _read_rss: lxml/feedparser unavailable ────────────────────────────────────
+
+def test_read_rss_missing_feedparser():
+    with patch.dict(sys.modules, {"feedparser": None}):
+        out = _read_rss("http://example.com/rss")
+    assert "not installed" in out.lower() or "error" in out.lower()

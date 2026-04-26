@@ -410,3 +410,67 @@ def test_get_s3_without_endpoint_url(monkeypatch):
     assert client is fake_client
     _, kwargs = fake_boto3.client.call_args
     assert "endpoint_url" not in kwargs
+
+
+# ── _send_email: missing credentials ─────────────────────────────────────────
+
+def test_send_email_missing_credentials(monkeypatch):
+    from jarvis.config import cfg
+    from jarvis.tools.email_tool import _send_email
+    monkeypatch.setattr(cfg, "EMAIL_ADDRESS", "")
+    monkeypatch.setattr(cfg, "EMAIL_PASSWORD", "")
+    out = _send_email("to@example.com", "Test", "body")
+    assert "not configured" in out.lower() or "credentials" in out.lower()
+
+
+def test_send_email_with_cc(monkeypatch):
+    """CC header is added to the email when provided."""
+    from jarvis.config import cfg
+    from jarvis.tools.email_tool import _send_email
+    import smtplib
+    monkeypatch.setattr(cfg, "EMAIL_ADDRESS", "from@test.com")
+    monkeypatch.setattr(cfg, "EMAIL_PASSWORD", "pass")
+    monkeypatch.setattr(cfg, "SMTP_HOST", "smtp.test.com")
+    monkeypatch.setattr(cfg, "SMTP_PORT", 465)
+
+    fake_server = MagicMock()
+    fake_server.__enter__ = MagicMock(return_value=fake_server)
+    fake_server.__exit__ = MagicMock(return_value=False)
+
+    with patch("jarvis.tools.email_tool.smtplib.SMTP_SSL", return_value=fake_server):
+        out = _send_email("to@test.com", "Subject", "Body", cc="cc@test.com")
+    assert "sent" in out.lower()
+    # Verify sendmail was called with 3 recipients (from cc being included)
+    sendmail_args = fake_server.sendmail.call_args[0]
+    assert "cc@test.com" in sendmail_args[1]
+
+
+# ── _read_emails: missing credentials ────────────────────────────────────────
+
+def test_read_emails_missing_credentials(monkeypatch):
+    from jarvis.config import cfg
+    from jarvis.tools.email_tool import _read_emails
+    monkeypatch.setattr(cfg, "EMAIL_ADDRESS", "")
+    monkeypatch.setattr(cfg, "EMAIL_PASSWORD", "")
+    out = _read_emails()
+    assert "not configured" in out.lower() or "credentials" in out.lower()
+
+
+# ── S3 tools: error handling ──────────────────────────────────────────────────
+
+def test_s3_list_boto3_missing():
+    """_s3_list returns error when boto3 not installed."""
+    with patch.dict(__import__("sys").modules, {"boto3": None}):
+        from jarvis.tools.storage_tools import _s3_list
+        out = _s3_list("my-bucket")
+    assert "error" in out.lower() or "boto3" in out.lower() or "installed" in out.lower()
+
+
+def test_s3_upload_boto3_missing(tmp_path):
+    """_s3_upload returns error when boto3 not installed."""
+    f = tmp_path / "file.txt"
+    f.write_text("data")
+    with patch.dict(__import__("sys").modules, {"boto3": None}):
+        from jarvis.tools.storage_tools import _s3_upload
+        out = _s3_upload(str(f), "my-bucket")
+    assert "error" in out.lower() or "boto3" in out.lower() or "installed" in out.lower()
