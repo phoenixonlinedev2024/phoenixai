@@ -175,3 +175,64 @@ def test_spreadsheet_tools_register():
     register_tools(reg)
     names = {t.name for t in reg.all()}
     assert {"read_spreadsheet", "write_spreadsheet", "list_sheets"} <= names
+
+
+# ── CSV edge cases ────────────────────────────────────────────────────────────
+
+def test_read_csv_empty_file(tmp_path):
+    p = tmp_path / "empty.csv"
+    p.write_text("")
+    result = _read_csv(str(p))
+    rows = json.loads(result)
+    assert rows == []
+
+
+def test_read_csv_single_column(tmp_path):
+    p = tmp_path / "single.csv"
+    p.write_text("header\nval1\nval2\n")
+    result = _read_csv(str(p))
+    rows = json.loads(result)
+    assert rows[0] == ["header"]
+    assert rows[1] == ["val1"]
+
+
+def test_read_csv_unicode_content(tmp_path):
+    p = tmp_path / "unicode.csv"
+    p.write_text("name,city\nJérôme,Montréal\n", encoding="utf-8")
+    result = _read_csv(str(p))
+    rows = json.loads(result)
+    assert "Jérôme" in rows[1][0]
+
+
+def test_write_spreadsheet_csv_roundtrip(tmp_path):
+    p = tmp_path / "roundtrip.csv"
+    data = [["a", "b", "c"], [1, 2, 3], [4, 5, 6]]
+    _write_spreadsheet(str(p), data)
+    result = _read_csv(str(p))
+    rows = json.loads(result)
+    assert rows[0] == ["a", "b", "c"]
+    assert len(rows) == 3
+
+
+def test_write_spreadsheet_zero_rows_csv(tmp_path):
+    p = tmp_path / "zero.csv"
+    result = _write_spreadsheet(str(p), [])
+    assert "0 rows" in result
+    # File should exist but be empty
+    assert p.exists()
+
+
+# ── _read_spreadsheet CSV routing ─────────────────────────────────────────────
+
+def test_read_spreadsheet_routes_csv_extension(tmp_path):
+    p = tmp_path / "data.csv"
+    p.write_text("x,y\n10,20\n")
+    result = _read_spreadsheet(str(p))
+    rows = json.loads(result)
+    assert rows[0] == ["x", "y"]
+
+
+def test_read_spreadsheet_non_existent_file_returns_error(tmp_path):
+    result = _read_spreadsheet(str(tmp_path / "missing.xlsx"))
+    # Either an error message or "openpyxl not installed" — both indicate failure
+    assert "error" in result.lower() or "not installed" in result.lower()
