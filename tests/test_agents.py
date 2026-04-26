@@ -499,3 +499,127 @@ async def test_subagent_run_ignores_unknown_block_type():
     agent = SubAgent(task, parent)
     result = await agent.run()
     assert result == "done"
+
+
+# ── SubagentTask defaults ─────────────────────────────────────────────────────
+
+def test_subagent_task_defaults():
+    task = SubagentTask()
+    assert task.goal == ""
+    assert task.context == ""
+    assert task.max_turns == 10
+    assert task.sandbox_backend is None
+    assert task.result is None
+    assert task.error is None
+    assert task.done is False
+    assert len(task.id) == 8  # uuid hex[:8]
+
+
+def test_subagent_task_custom_values():
+    task = SubagentTask(goal="do it", context="use tools", max_turns=5, sandbox_backend="docker")
+    assert task.goal == "do it"
+    assert task.context == "use tools"
+    assert task.max_turns == 5
+    assert task.sandbox_backend == "docker"
+
+
+# ── SubAgent with context ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_subagent_includes_context_in_system_prompt():
+    """SubagentTask.context is appended to system prompt when set."""
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "task done"
+
+    response = MagicMock()
+    response.content = [text_block]
+
+    parent = MagicMock()
+    parent.client.messages.create = AsyncMock(return_value=response)
+    parent._get_model = MagicMock(return_value="claude-haiku-4-5-20251001")
+    parent.registry.anthropic_tools = MagicMock(return_value=[])
+
+    task = SubagentTask(goal="process logs", context="Look in /var/log/app.log")
+    agent = SubAgent(task, parent)
+    await agent.run()
+
+    call_kwargs = parent.client.messages.create.call_args.kwargs
+    assert "Look in /var/log/app.log" in call_kwargs["system"]
+
+
+# ── RPCMessage dataclass ──────────────────────────────────────────────────────
+
+def test_rpc_message_is_response_false_by_default():
+    m = RPCMessage()
+    assert m.is_response is False
+
+
+def test_rpc_message_error_none_by_default():
+    m = RPCMessage()
+    assert m.error is None
+
+
+def test_rpc_message_result_none_by_default():
+    m = RPCMessage()
+    assert m.result is None
+
+
+# ── AgentRPC: unregistered target raises ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_agent_rpc_call_unregistered_agent_raises():
+    bus = AgentRPC()
+    with pytest.raises(ValueError, match="not registered"):
+        await bus.call("unknown_agent", "some_method")
+
+
+# ── AgentRPC: on() decorator registers handler ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_on_decorator_registers_handler():
+    bus = AgentRPC()
+    bus.register("worker")
+
+    @bus.on("worker", "greet")
+    async def greet(**kwargs):
+        return f"Hello, {kwargs.get('name', 'world')}!"
+
+    assert "greet" in bus._handlers["worker"]
+
+
+@pytest.mark.asyncio
+async def test_rpc_handler_returns_result():
+    """Handler registered with @on() returns the correct result."""
+    bus = AgentRPC()
+    bus.register("echo-worker")
+
+    @bus.on("echo-worker", "echo")
+    async def echo(**kwargs):
+        return kwargs.get("message", "")
+
+    # Manually invoke the handler (same as process_messages would do)
+    handler = bus._handlers["echo-worker"]["echo"]
+    result = await handler(message="ping")
+    assert result == "ping"
+
+
+# ── SubagentPool ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_subagent_pool_dispatch_one():
+    """SubagentPool.dispatch_one runs a single task and returns the result."""
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "pool result"
+    response = MagicMock()
+    response.content = [text_block]
+
+    parent = MagicMock()
+    parent.client.messages.create = AsyncMock(return_value=response)
+    parent._get_model = MagicMock(return_value="claude-haiku-4-5-20251001")
+    parent.registry.anthropic_tools = MagicMock(return_value=[])
+
+    pool = SubagentPool(parent, max_concurrent=2)
+    result = await pool.dispatch_one("compute pi")
+    assert result == "pool result"
