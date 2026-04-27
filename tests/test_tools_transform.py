@@ -302,3 +302,98 @@ def test_text_diff_identical_texts():
     from jarvis.tools.transform_tools import _text_diff
     result = _text_diff("same\n", "same\n")
     assert "No differences" in result or result.strip() == "" or "identical" in result.lower()
+
+
+# ── _regex_test: flags and multiple matches ───────────────────────────────────
+
+def test_regex_test_case_insensitive_flag():
+    from jarvis.tools.transform_tools import _regex_test
+    import json
+    result = _regex_test(r"hello", "Hello World", flags="i")
+    data = json.loads(result)
+    assert data[0]["match"].lower() == "hello"
+
+
+def test_regex_test_multiline_flag():
+    from jarvis.tools.transform_tools import _regex_test
+    import json
+    result = _regex_test(r"^start", "start line\nstart again", flags="m")
+    data = json.loads(result)
+    assert len(data) == 2
+
+
+def test_regex_test_multiple_matches_capped_at_20():
+    from jarvis.tools.transform_tools import _regex_test
+    import json
+    text = " ".join(["word"] * 30)
+    result = _regex_test(r"word", text)
+    data = json.loads(result)
+    assert len(data) <= 20
+
+
+def test_regex_test_with_groups():
+    from jarvis.tools.transform_tools import _regex_test
+    import json
+    result = _regex_test(r"(\w+)@(\w+)", "user@host")
+    data = json.loads(result)
+    assert list(data[0]["groups"]) == ["user", "host"]
+
+
+# ── _json_to_yaml: success path ───────────────────────────────────────────────
+
+def test_json_to_yaml_success():
+    import sys
+    fake_yaml = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    fake_yaml.dump.return_value = "key: value\n"
+    with __import__("unittest.mock", fromlist=["patch"]).patch.dict(sys.modules, {"yaml": fake_yaml}):
+        from jarvis.tools.transform_tools import _json_to_yaml
+        result = _json_to_yaml('{"key": "value"}')
+    assert "value" in result
+
+
+def test_json_to_yaml_invalid_json():
+    import sys
+    fake_yaml = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    fake_yaml.dump.side_effect = Exception("cannot convert")
+    with __import__("unittest.mock", fromlist=["patch"]).patch.dict(sys.modules, {"yaml": fake_yaml}):
+        from jarvis.tools.transform_tools import _json_to_yaml
+        result = _json_to_yaml("{not valid json}")
+    assert "error" in result.lower()
+
+
+# ── _yaml_to_json: success path ───────────────────────────────────────────────
+
+def test_yaml_to_json_success():
+    import sys
+    fake_yaml = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    fake_yaml.safe_load.return_value = {"name": "jarvis", "version": 2}
+    with __import__("unittest.mock", fromlist=["patch"]).patch.dict(sys.modules, {"yaml": fake_yaml}):
+        from jarvis.tools.transform_tools import _yaml_to_json
+        result = _yaml_to_json("name: jarvis\nversion: 2\n")
+    import json
+    data = json.loads(result)
+    assert data["name"] == "jarvis"
+
+
+def test_yaml_to_json_parse_error():
+    import sys
+    fake_yaml = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    fake_yaml.safe_load.side_effect = Exception("bad yaml")
+    with __import__("unittest.mock", fromlist=["patch"]).patch.dict(sys.modules, {"yaml": fake_yaml}):
+        from jarvis.tools.transform_tools import _yaml_to_json
+        result = _yaml_to_json(": invalid : yaml :")
+    assert "error" in result.lower()
+
+
+# ── _validate_json: error paths ───────────────────────────────────────────────
+
+def test_validate_json_invalid_reports_error():
+    from jarvis.tools.transform_tools import _validate_json
+    result = _validate_json("{bad}")
+    assert "Invalid JSON" in result
+
+
+def test_validate_json_dict_reports_dict_type():
+    from jarvis.tools.transform_tools import _validate_json
+    result = _validate_json('{"a": 1}')
+    assert "dict" in result
