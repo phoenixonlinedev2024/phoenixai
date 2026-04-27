@@ -675,6 +675,7 @@ def test_list_directory_empty_dir_returns_empty_marker(tmp_path):
 
 def test_api_call_text_fallback_non_json():
     """When resp.json() raises, text[:4000] is returned instead."""
+    pytest.importorskip("requests")
     from unittest.mock import MagicMock, patch
     fake_resp = MagicMock()
     fake_resp.json.side_effect = ValueError("not json")
