@@ -82,17 +82,33 @@ WEB_UI_DIR = Path(__file__).parent / "web_ui"
 # ---------------------------------------------------------------------------
 
 def create_app(jarvis: "Jarvis") -> FastAPI:
+    # Disable interactive docs when security is on — they leak the full API
+    # schema to anyone who can reach the daemon, and our middleware
+    # whitelists "/" and "/health" only.
+    docs_kwargs = (
+        {"docs_url": None, "redoc_url": None, "openapi_url": None}
+        if cfg.SECURITY_ENABLED else {}
+    )
     app = FastAPI(
         title="JARVIS — OpenClaw AI",
         description="Just A Rather Very Intelligent System REST + WebSocket API",
         version="2.0.0",
+        **docs_kwargs,
     )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+
+    # CORS policy: in production (SECURITY_ENABLED=true) require an explicit
+    # allow-list via CORS_ALLOWED_ORIGINS. In dev, default to wildcard.
+    cors_origins = cfg.CORS_ALLOWED_ORIGINS
+    if not cors_origins and not cfg.SECURITY_ENABLED:
+        cors_origins = ["*"]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["X-Api-Key", "Content-Type", "Authorization"],
+            allow_credentials=False,
+        )
 
     # ── REST endpoints ───────────────────────────────────────────────────
 

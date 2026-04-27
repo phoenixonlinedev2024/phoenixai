@@ -4,12 +4,35 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
 from jarvis.config import cfg
+
+
+# Catastrophic shell patterns that are refused even on a sandboxed backend.
+# This is defense in depth — the sandbox is the primary boundary, but a
+# misconfigured "local" backend should still refuse the obvious foot-guns.
+_SHELL_DENY_PATTERNS = [
+    re.compile(r"\brm\s+(-[rRf]+\s+)*/(?:\s|$)"),                 # rm -rf /
+    re.compile(r":\s*\(\)\s*\{\s*:\|\s*:\s*&\s*\}\s*;\s*:"),     # fork bomb
+    re.compile(r"\bmkfs\.\w+\b"),                                 # mkfs.*
+    re.compile(r"\bdd\b[^|]*\bof=/dev/(sd[a-z]|nvme|xvd|hd)"),    # dd to raw disk
+    re.compile(r">\s*/etc/(passwd|shadow|sudoers)\b"),            # overwrite system files
+    re.compile(r"\bchmod\s+(-R\s+)?[0-7]*7[0-7]*7[0-7]*7\s+/"),  # chmod 777 /
+]
+
+
+def _shell_is_denied(command: str) -> str | None:
+    """Return the deny reason if ``command`` matches a catastrophic pattern."""
+    for pat in _SHELL_DENY_PATTERNS:
+        if pat.search(command):
+            return f"Refused: command matches deny-list pattern {pat.pattern!r}"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -68,15 +91,28 @@ class ToolRegistry:
         return list(self._tools.keys())
 
     def load_dynamic_tools(self) -> None:
-        """Load any tools saved to the dynamic tools directory."""
+        """Load any tools saved to the dynamic tools directory.
+
+        Each file is AST-validated against the same safety policy as freshly
+        synthesised tools before its module body is executed. A file written
+        outside the synthesis pipeline (e.g. by an attacker with disk access)
+        is therefore subject to the same import / call deny-list.
+        """
+        if not cfg.DYNAMIC_TOOLS_ENABLED:
+            return
+        from jarvis.tools.creator import UnsafeToolCode, _validate_tool_ast
         cfg.TOOLS_DIR.mkdir(parents=True, exist_ok=True)
         for path in cfg.TOOLS_DIR.glob("*.py"):
             try:
+                source = path.read_text(encoding="utf-8")
+                _validate_tool_ast(source, require_run=False)
                 spec = importlib.util.spec_from_file_location(path.stem, path)
                 mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
                 spec.loader.exec_module(mod)  # type: ignore[union-attr]
                 if hasattr(mod, "register_tools"):
                     mod.register_tools(self)
+            except UnsafeToolCode as exc:
+                print(f"[JARVIS] Refused dynamic tool {path.name}: {exc}")
             except Exception as exc:
                 print(f"[JARVIS] Warning: failed to load dynamic tool {path.name}: {exc}")
 
@@ -142,11 +178,48 @@ def _list_directory(path: str = ".") -> str:
         return f"List error: {exc}"
 
 
-def _run_shell(command: str, cwd: str | None = None, timeout: int = 30) -> str:
+async def _run_shell(command: str, cwd: str | None = None, timeout: int = 30) -> str:
+    """Execute a shell command with defense-in-depth.
+
+    Hardening applied:
+      * SHELL_TOOL_ENABLED kill-switch (operator opt-out).
+      * Catastrophic-pattern deny-list (rm -rf /, fork bombs, etc.).
+      * Routes through the configured sandbox backend (docker/ssh/modal) so
+        non-local backends provide real isolation.
+      * Falls back to subprocess WITHOUT shell=True — uses shlex.split so
+        shell metacharacters are not expanded.
+    """
+    if not cfg.SHELL_TOOL_ENABLED:
+        return "Refused: shell tool disabled (SHELL_TOOL_ENABLED=false)."
+
+    denied = _shell_is_denied(command)
+    if denied:
+        return denied
+
+    # If a non-local sandbox backend is configured, route through it.
+    if cfg.SANDBOX_BACKEND and cfg.SANDBOX_BACKEND != "local":
+        try:
+            from jarvis.sandbox.router import SandboxRouter
+            router = SandboxRouter()
+            result = await router.run(command, timeout=timeout)
+            return str(result)
+        except Exception as exc:
+            return f"Sandbox error: {exc}"
+
+    # Local backend: run without a shell so metacharacters (|, ;, &, $(...))
+    # do not expand. Operators who need shell features should provision a
+    # docker/ssh sandbox instead.
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        return f"Shell parse error: {exc}"
+    if not argv:
+        return "Refused: empty command."
+
     try:
         result = subprocess.run(
-            command,
-            shell=True,
+            argv,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -163,6 +236,8 @@ def _run_shell(command: str, cwd: str | None = None, timeout: int = 30) -> str:
         return "\n".join(parts)
     except subprocess.TimeoutExpired:
         return "Command timed out."
+    except FileNotFoundError as exc:
+        return f"Command not found: {exc}"
     except Exception as exc:
         return f"Shell error: {exc}"
 

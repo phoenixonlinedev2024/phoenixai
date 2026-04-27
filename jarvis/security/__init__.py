@@ -139,44 +139,66 @@ class SecurityMiddleware:
         self.rate_limiter = rate_limiter
 
     async def __call__(self, scope, receive, send) -> None:
-        if not cfg.SECURITY_ENABLED or scope["type"] != "http":
+        scope_type = scope.get("type")
+        if not cfg.SECURITY_ENABLED or scope_type not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
 
         path = scope.get("path", "")
-        # Always pass through public paths
-        if path in ("/", "/health", "/docs", "/openapi.json", "/metrics") or path.startswith("/ws"):
+        is_ws = scope_type == "websocket"
+
+        # Public, unauthenticated paths. /docs and /openapi.json are deliberately
+        # excluded — when SECURITY_ENABLED=true the daemon also disables them at
+        # the FastAPI level.
+        if path in ("/", "/health"):
             await self.app(scope, receive, send)
             return
 
+        # Extract API key from headers (HTTP + WebSocket) or query string (WS only)
         headers = dict(scope.get("headers", []))
         raw_key = headers.get(b"x-api-key", b"").decode()
+        if not raw_key and is_ws:
+            qs = scope.get("query_string", b"").decode()
+            for part in qs.split("&"):
+                if part.startswith("api_key="):
+                    raw_key = part[len("api_key="):]
+                    break
+
+        if not self.key_store.has_any():
+            # No keys provisioned. Refuse to serve — operator must run
+            # `jarvis keys --create` before the daemon will accept traffic.
+            await self._respond(send, 503,
+                                "No API keys provisioned. Run `jarvis keys --create`.",
+                                ws=is_ws)
+            return
 
         if not raw_key:
-            if not self.key_store.has_any():
-                # Bootstrap mode: no keys provisioned yet
-                await self.app(scope, receive, send)
-                return
-            await self._respond(send, 401, "Missing X-Api-Key header")
+            await self._respond(send, 401, "Missing X-Api-Key", ws=is_ws)
             return
 
         key = self.key_store.validate(raw_key)
         if not key:
-            await self._respond(send, 403, "Invalid API key")
+            await self._respond(send, 403, "Invalid API key", ws=is_ws)
             return
 
         if any(path.startswith(r) for r in _ADMIN_ROUTES) and key.role != "admin":
-            await self._respond(send, 403, "Admin role required")
+            await self._respond(send, 403, "Admin role required", ws=is_ws)
             return
 
         if not self.rate_limiter.is_allowed(raw_key):
-            await self._respond(send, 429, "Rate limit exceeded")
+            await self._respond(send, 429, "Rate limit exceeded", ws=is_ws)
             return
 
         await self.app(scope, receive, send)
 
     @staticmethod
-    async def _respond(send, status: int, detail: str) -> None:
+    async def _respond(send, status: int, detail: str, ws: bool = False) -> None:
+        if ws:
+            # Map HTTP-ish statuses onto WebSocket close codes in the 4000 range
+            # (application-defined). 4401 is the de-facto "auth required" code.
+            ws_code = {401: 4401, 403: 4403, 429: 4429, 503: 4503}.get(status, 4000)
+            await send({"type": "websocket.close", "code": ws_code, "reason": detail})
+            return
         body = json.dumps({"detail": detail}).encode()
         await send({"type": "http.response.start", "status": status,
                     "headers": [[b"content-type", b"application/json"]]})

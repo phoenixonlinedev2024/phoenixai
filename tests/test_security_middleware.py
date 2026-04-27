@@ -60,10 +60,44 @@ async def test_passthrough_when_security_disabled(middleware, app_mock, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_passthrough_for_non_http(middleware, app_mock, monkeypatch):
+async def test_lifespan_scope_passes_through(middleware, app_mock, monkeypatch):
+    """ASGI lifespan messages bypass auth — we only gate http + websocket."""
     from jarvis.config import cfg
     monkeypatch.setattr(cfg, "SECURITY_ENABLED", True)
-    scope = {"type": "websocket", "path": "/ws"}
+    scope = {"type": "lifespan"}
+    await middleware(scope, None, lambda m: None)
+    app_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_websocket_now_requires_auth(middleware, app_mock, store, monkeypatch):
+    """WebSocket scopes must validate the API key like HTTP."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "SECURITY_ENABLED", True)
+    store.generate()  # exit bootstrap mode
+    scope = {"type": "websocket", "path": "/ws", "headers": [], "query_string": b""}
+    sent = []
+
+    async def send(m):
+        sent.append(m)
+
+    await middleware(scope, None, send)
+    app_mock.assert_not_awaited()
+    assert sent[0]["type"] == "websocket.close"
+    assert sent[0]["code"] == 4401
+
+
+@pytest.mark.asyncio
+async def test_websocket_accepts_api_key_in_query_string(middleware, app_mock, store, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "SECURITY_ENABLED", True)
+    raw = store.generate()
+    scope = {
+        "type": "websocket",
+        "path": "/ws",
+        "headers": [],
+        "query_string": f"api_key={raw}".encode(),
+    }
     await middleware(scope, None, lambda m: None)
     app_mock.assert_awaited_once()
 
@@ -71,7 +105,7 @@ async def test_passthrough_for_non_http(middleware, app_mock, monkeypatch):
 # ── Public paths ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["/", "/health", "/docs", "/openapi.json", "/metrics", "/ws/abc"])
+@pytest.mark.parametrize("path", ["/", "/health"])
 async def test_public_paths_bypass(middleware, app_mock, monkeypatch, path):
     from jarvis.config import cfg
     monkeypatch.setattr(cfg, "SECURITY_ENABLED", True)
@@ -80,15 +114,46 @@ async def test_public_paths_bypass(middleware, app_mock, monkeypatch, path):
     app_mock.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/docs", "/openapi.json", "/metrics", "/ws/abc"])
+async def test_previously_public_paths_now_require_auth(
+    middleware, app_mock, store, monkeypatch, path
+):
+    """Regression: /docs /openapi.json /metrics and /ws/* used to bypass auth.
+    They no longer do."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "SECURITY_ENABLED", True)
+    store.generate()  # exit bootstrap so the "missing key" path triggers
+    scope = _make_scope(path)
+    sent = []
+
+    async def send(m):
+        sent.append(m)
+
+    await middleware(scope, None, send)
+    app_mock.assert_not_awaited()
+    assert sent[0]["status"] == 401
+
+
 # ── Bootstrap mode: no keys provisioned ───────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_bootstrap_mode_allows_when_no_keys(middleware, app_mock, monkeypatch):
+async def test_bootstrap_mode_returns_503(middleware, app_mock, monkeypatch):
+    """Regression: with SECURITY_ENABLED and no keys provisioned the daemon
+    must refuse to serve instead of bypassing auth."""
     from jarvis.config import cfg
     monkeypatch.setattr(cfg, "SECURITY_ENABLED", True)
-    scope = _make_scope("/chat")  # no X-Api-Key header, no keys stored
-    await middleware(scope, None, lambda m: None)
-    app_mock.assert_awaited_once()
+    scope = _make_scope("/chat")
+    sent = []
+
+    async def send(m):
+        sent.append(m)
+
+    await middleware(scope, None, send)
+    app_mock.assert_not_awaited()
+    assert sent[0]["status"] == 503
+    body = json.loads(sent[1]["body"])
+    assert "No API keys" in body["detail"]
 
 
 # ── Missing key rejected when keys exist ──────────────────────────────────────

@@ -289,8 +289,37 @@ def test_make_fn_import_inside_body():
 
 
 def test_make_fn_syntax_error_raises():
-    with pytest.raises(SyntaxError):
+    from jarvis.tools.creator import UnsafeToolCode
+    with pytest.raises(UnsafeToolCode):
         _make_fn("def run(**kwargs):\n    return ??? bad syntax")
+
+
+def test_make_fn_rejects_os_system():
+    from jarvis.tools.creator import UnsafeToolCode
+    code = "def run(**kwargs):\n    import os\n    os.system('id')\n    return 'ok'"
+    with pytest.raises(UnsafeToolCode, match="os.system"):
+        _make_fn(code)
+
+
+def test_make_fn_rejects_eval():
+    from jarvis.tools.creator import UnsafeToolCode
+    code = "def run(**kwargs):\n    return eval('1+1')"
+    with pytest.raises(UnsafeToolCode, match="eval"):
+        _make_fn(code)
+
+
+def test_make_fn_rejects_dunder_escape():
+    from jarvis.tools.creator import UnsafeToolCode
+    code = "def run(**kwargs):\n    return ().__class__.__bases__[0].__subclasses__()"
+    with pytest.raises(UnsafeToolCode, match="dunder"):
+        _make_fn(code)
+
+
+def test_make_fn_rejects_forbidden_import():
+    from jarvis.tools.creator import UnsafeToolCode
+    code = "def run(**kwargs):\n    import ctypes\n    return 'ok'"
+    with pytest.raises(UnsafeToolCode, match="ctypes"):
+        _make_fn(code)
 
 
 @pytest.mark.asyncio
