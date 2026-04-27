@@ -29,10 +29,12 @@ class ProviderRouter:
 
     def _openrouter(self):
         if "openrouter" not in self._clients:
+            if not cfg.OPENROUTER_API_KEY:
+                return None
             try:
                 from openai import AsyncOpenAI
                 self._clients["openrouter"] = AsyncOpenAI(
-                    api_key=cfg.OPENROUTER_API_KEY or "sk-or-free",
+                    api_key=cfg.OPENROUTER_API_KEY,
                     base_url="https://openrouter.ai/api/v1",
                 )
             except ImportError:
@@ -41,12 +43,12 @@ class ProviderRouter:
 
     def _openai_compat(self):
         if "openai_compat" not in self._clients:
-            if not cfg.OPENAI_COMPAT_BASE_URL:
+            if not cfg.OPENAI_COMPAT_BASE_URL or not cfg.OPENAI_COMPAT_API_KEY:
                 return None
             try:
                 from openai import AsyncOpenAI
                 self._clients["openai_compat"] = AsyncOpenAI(
-                    api_key=cfg.OPENAI_COMPAT_API_KEY or "none",
+                    api_key=cfg.OPENAI_COMPAT_API_KEY,
                     base_url=cfg.OPENAI_COMPAT_BASE_URL,
                 )
             except ImportError:

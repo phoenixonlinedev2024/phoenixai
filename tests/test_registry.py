@@ -1,5 +1,6 @@
 """Tests for jarvis.tools.registry — tool registration and execution."""
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -148,7 +149,25 @@ def test_load_dynamic_tools_skips_broken_file(tmp_path, monkeypatch, capsys):
     registry = ToolRegistry()
     registry.load_dynamic_tools()  # must not raise
     assert len(registry.all()) == 0
-    assert "Warning" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Refused" in out or "Warning" in out
+
+
+def test_load_dynamic_tools_refuses_unsafe_file(tmp_path, monkeypatch, capsys):
+    """Regression: persisted dynamic tools that import forbidden modules or
+    call os.system are refused by the AST validator before being executed."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "TOOLS_DIR", tmp_path)
+    (tmp_path / "evil.py").write_text(
+        "import os\n"
+        "os.system('id')\n"
+        "def register_tools(reg):\n"
+        "    pass\n"
+    )
+    registry = ToolRegistry()
+    registry.load_dynamic_tools()
+    assert len(registry.all()) == 0
+    assert "Refused" in capsys.readouterr().out
 
 
 def test_load_dynamic_tools_skips_file_without_register(tmp_path, monkeypatch):
@@ -422,40 +441,56 @@ def test_write_file_reports_char_count(tmp_path):
 
 # ── _run_shell ────────────────────────────────────────────────────────────────
 
+def _shell(cmd, **kw):
+    return asyncio.run(_run_shell(cmd, **kw))
+
+
 def test_run_shell_captures_stdout():
-    out = _run_shell("echo hello_from_shell")
+    out = _shell("echo hello_from_shell")
     assert "hello_from_shell" in out
 
 
 def test_run_shell_exit_code_included():
-    out = _run_shell("exit 0", timeout=5)
+    out = _shell("true", timeout=5)
     assert "Exit code: 0" in out
 
 
 def test_run_shell_nonzero_exit_code():
-    out = _run_shell("exit 42", timeout=5)
-    assert "42" in out
+    out = _shell("false", timeout=5)
+    assert "Exit code: 1" in out
 
 
 def test_run_shell_timeout():
     import subprocess
     with patch("jarvis.tools.registry.subprocess.run",
                side_effect=subprocess.TimeoutExpired(cmd="sleep", timeout=30)):
-        out = _run_shell("sleep 999")
+        out = _shell("sleep 999")
     assert "timed out" in out.lower()
 
 
 def test_run_shell_exception():
     with patch("jarvis.tools.registry.subprocess.run", side_effect=OSError("no shell")):
-        out = _run_shell("impossible")
+        out = _shell("impossible")
     assert "Shell error" in out
 
 
 def test_run_shell_captures_stderr():
-    """Line 161: STDERR branch in _run_shell is exercised by a command writing to stderr."""
-    out = _run_shell("echo 'err msg' >&2")
+    # Without shell=True we need to invoke sh ourselves to redirect to stderr.
+    out = _shell("sh -c 'echo err_msg >&2'")
     assert "STDERR" in out
-    assert "err msg" in out
+    assert "err_msg" in out
+
+
+def test_run_shell_refuses_destructive_pattern():
+    out = _shell("rm -rf /")
+    assert "deny-list" in out
+
+
+def test_run_shell_kill_switch():
+    from jarvis.config import cfg
+    with patch.object(cfg, "SHELL_TOOL_ENABLED", False):
+        out = _shell("echo nope")
+    assert "disabled" in out.lower()
 
 
 def test_web_fetch_decomposes_nav_tags():
@@ -649,14 +684,13 @@ def test_anthropic_tools_returns_all_tools():
 def test_run_shell_with_cwd(tmp_path):
     """cwd parameter sets the working directory for the command."""
     (tmp_path / "testfile.txt").write_text("content")
-    out = _run_shell("ls testfile.txt", cwd=str(tmp_path))
+    out = _shell("ls testfile.txt", cwd=str(tmp_path))
     assert "testfile.txt" in out
 
 
 def test_run_shell_both_stdout_and_stderr():
     """When command produces both stdout and stderr both are included in output."""
-    cmd = "echo stdout_text; echo stderr_text >&2"
-    out = _run_shell(cmd)
+    out = _shell("sh -c 'echo stdout_text; echo stderr_text >&2'")
     assert "STDOUT" in out
     assert "STDERR" in out
     assert "stdout_text" in out
@@ -675,6 +709,7 @@ def test_list_directory_empty_dir_returns_empty_marker(tmp_path):
 
 def test_api_call_text_fallback_non_json():
     """When resp.json() raises, text[:4000] is returned instead."""
+    pytest.importorskip("requests")
     from unittest.mock import MagicMock, patch
     fake_resp = MagicMock()
     fake_resp.json.side_effect = ValueError("not json")

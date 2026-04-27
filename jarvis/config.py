@@ -46,6 +46,11 @@ class Config:
     API_HOST: str = os.environ.get("API_HOST", "0.0.0.0")
     API_PORT: int = int(os.environ.get("API_PORT", "8000"))
     MONITOR_INTERVAL: int = int(os.environ.get("MONITOR_INTERVAL", "300"))
+    # Comma-separated list of origins; empty list means CORS is disabled when
+    # SECURITY_ENABLED=true, or wildcarded to "*" when SECURITY_ENABLED=false.
+    CORS_ALLOWED_ORIGINS: list = [
+        o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
+    ]
 
     # ── Self-improvement ───────────────────────────────────────────────
     LEARNING_ENABLED: bool = os.environ.get("LEARNING_ENABLED", "true").lower() == "true"
@@ -78,7 +83,9 @@ class Config:
     # WhatsApp — Meta Cloud API
     WHATSAPP_ACCESS_TOKEN: str = os.environ.get("WHATSAPP_ACCESS_TOKEN", "")
     WHATSAPP_PHONE_ID: str = os.environ.get("WHATSAPP_PHONE_ID", "")
-    WHATSAPP_VERIFY_TOKEN: str = os.environ.get("WHATSAPP_VERIFY_TOKEN", "jarvis_verify")
+    # Must be explicitly set; no default — predictable defaults let attackers
+    # complete the WhatsApp webhook handshake.
+    WHATSAPP_VERIFY_TOKEN: str = os.environ.get("WHATSAPP_VERIFY_TOKEN", "")
     # Signal
     SIGNAL_PHONE_NUMBER: str = os.environ.get("SIGNAL_PHONE_NUMBER", "")
     SIGNAL_CLI_PATH: str = os.environ.get("SIGNAL_CLI_PATH", "signal-cli")
@@ -107,6 +114,10 @@ class Config:
     SECURITY_ENABLED: bool = os.environ.get("SECURITY_ENABLED", "false").lower() == "true"
     RATE_LIMIT: int = int(os.environ.get("RATE_LIMIT", "120"))
     SELF_IMPROVE_INTERVAL_HOURS: float = float(os.environ.get("SELF_IMPROVE_INTERVAL_HOURS", "12"))
+    # Risky-feature kill-switches. Both default ON for backward compatibility,
+    # but operators in hardened environments should set them to "false".
+    DYNAMIC_TOOLS_ENABLED: bool = os.environ.get("DYNAMIC_TOOLS_ENABLED", "true").lower() == "true"
+    SHELL_TOOL_ENABLED: bool = os.environ.get("SHELL_TOOL_ENABLED", "true").lower() == "true"
 
     # ── External integrations ──────────────────────────────────────────
     GITHUB_TOKEN: str = os.environ.get("GITHUB_TOKEN", "")

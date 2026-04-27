@@ -127,6 +127,13 @@ class MemoryStore:
             ).fetchall()
         return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
+    def latest_session_id(self) -> str | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT session_id FROM conversations ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return row["session_id"] if row else None
+
     # ------------------------------------------------------------------ #
     # Facts (long-term knowledge)
     # ------------------------------------------------------------------ #
