@@ -397,3 +397,94 @@ def test_validate_json_dict_reports_dict_type():
     from jarvis.tools.transform_tools import _validate_json
     result = _validate_json('{"a": 1}')
     assert "dict" in result
+
+
+# ── _regex_test dotall flag ───────────────────────────────────────────────────
+
+def test_regex_test_dotall_flag():
+    """flags='s' makes '.' match newlines (DOTALL)."""
+    from jarvis.tools.transform_tools import _regex_test
+    import json
+    result = _regex_test(r"start.end", "start\nend", flags="s")
+    data = json.loads(result)
+    assert len(data) == 1
+    assert data[0]["match"] == "start\nend"
+
+
+def test_regex_test_dotall_not_set_by_default():
+    """Without 's' flag, '.' does NOT match newlines."""
+    from jarvis.tools.transform_tools import _regex_test
+    result = _regex_test(r"start.end", "start\nend")
+    assert "No matches" in result
+
+
+# ── _text_diff context parameter ──────────────────────────────────────────────
+
+def test_text_diff_custom_context():
+    """context=0 shows no surrounding lines."""
+    from jarvis.tools.transform_tools import _text_diff
+    a = "line1\nline2\nline3\nchanged\nline5\nline6\nline7\n"
+    b = "line1\nline2\nline3\nnew_line\nline5\nline6\nline7\n"
+    diff_0 = _text_diff(a, b, context=0)
+    diff_3 = _text_diff(a, b, context=3)
+    # With context=0 the diff should be shorter (fewer unchanged lines shown)
+    assert len(diff_0) < len(diff_3)
+
+
+# ── _validate_json size includes all chars ────────────────────────────────────
+
+def test_validate_json_reports_size():
+    from jarvis.tools.transform_tools import _validate_json
+    json_str = '{"k": "v"}'
+    result = _validate_json(json_str)
+    assert str(len(json_str)) in result
+
+
+# ── _jq_query pure Python path: empty query part is skipped ──────────────────
+
+def test_jq_query_pure_python_skips_empty_parts():
+    """Leading dot produces an empty part that is skipped."""
+    from jarvis.tools.transform_tools import _jq_query
+    from unittest.mock import patch
+    import subprocess
+    # Make jq binary "not found" and jq_lib unavailable
+    with patch("subprocess.run", side_effect=FileNotFoundError), \
+         patch.dict("sys.modules", {"jq": None}):
+        result = _jq_query('{"a": 42}', ".a")
+    assert "42" in result
+
+
+# ── _yaml_to_json with PyYAML missing ImportError ────────────────────────────
+
+def test_yaml_to_json_missing_pyyaml_v2(monkeypatch):
+    """ImportError from yaml is caught and reported."""
+    from jarvis.tools import transform_tools
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yaml":
+            raise ImportError("no pyyaml")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    result = transform_tools._yaml_to_json("key: value")
+    assert "not installed" in result.lower() or "PyYAML" in result
+
+
+# ── _json_to_yaml with PyYAML missing ImportError ────────────────────────────
+
+def test_json_to_yaml_missing_pyyaml_v2(monkeypatch):
+    """ImportError from yaml is caught and reported."""
+    from jarvis.tools import transform_tools
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yaml":
+            raise ImportError("no pyyaml")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    result = transform_tools._json_to_yaml('{"k": "v"}')
+    assert "not installed" in result.lower() or "PyYAML" in result

@@ -642,3 +642,59 @@ def test_anthropic_tools_returns_all_tools():
     assert len(tools) == 5
     names = {t["name"] for t in tools}
     assert {f"tool_{i}" for i in range(5)} == names
+
+
+# ── _run_shell with cwd parameter ────────────────────────────────────────────
+
+def test_run_shell_with_cwd(tmp_path):
+    """cwd parameter sets the working directory for the command."""
+    (tmp_path / "testfile.txt").write_text("content")
+    out = _run_shell("ls testfile.txt", cwd=str(tmp_path))
+    assert "testfile.txt" in out
+
+
+def test_run_shell_both_stdout_and_stderr():
+    """When command produces both stdout and stderr both are included in output."""
+    cmd = "echo stdout_text; echo stderr_text >&2"
+    out = _run_shell(cmd)
+    assert "STDOUT" in out
+    assert "STDERR" in out
+    assert "stdout_text" in out
+    assert "stderr_text" in out
+
+
+# ── _list_directory empty directory ──────────────────────────────────────────
+
+def test_list_directory_empty_dir_returns_empty_marker(tmp_path):
+    """Empty directory returns the '(empty)' placeholder."""
+    out = _list_directory(str(tmp_path))
+    assert out == "(empty)"
+
+
+# ── _api_call text fallback when response is not JSON ────────────────────────
+
+def test_api_call_text_fallback_non_json():
+    """When resp.json() raises, text[:4000] is returned instead."""
+    from unittest.mock import MagicMock, patch
+    fake_resp = MagicMock()
+    fake_resp.json.side_effect = ValueError("not json")
+    fake_resp.text = "plain text response"
+
+    fake_requests = MagicMock()
+    fake_requests.request.return_value = fake_resp
+
+    with patch("requests.request", fake_requests.request):
+        out = _api_call("https://example.com/endpoint")
+    assert "plain text response" in out
+
+
+# ── Tool.to_anthropic() structure ────────────────────────────────────────────
+
+def test_tool_to_anthropic_includes_input_schema():
+    """to_anthropic() includes input_schema key (for Claude API)."""
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    t = Tool("test_t", "desc", schema, fn=lambda x: x)
+    d = t.to_anthropic()
+    assert d["input_schema"] == schema
+    assert "description" in d
+    assert d["name"] == "test_t"
