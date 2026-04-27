@@ -666,6 +666,81 @@ def test_git_branch_list_returns_branches():
     assert "feature" in out
 
 
+# ── git_clone: success and error paths ───────────────────────────────────────
+
+def test_git_clone_success():
+    from jarvis.tools.git_tools import _git_clone
+    fake, repo = _fake_git()
+    fake.Repo.clone_from = MagicMock(return_value=repo)
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_clone("https://github.com/example/repo.git", dest="/tmp/repo")
+    assert "Cloned" in out
+    assert "repo" in out
+
+
+def test_git_clone_infers_dest_from_url():
+    from jarvis.tools.git_tools import _git_clone
+    fake, repo = _fake_git()
+    fake.Repo.clone_from = MagicMock(return_value=repo)
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_clone("https://github.com/example/myrepo.git")
+    assert "myrepo" in out
+
+
+def test_git_clone_with_branch():
+    from jarvis.tools.git_tools import _git_clone
+    fake, repo = _fake_git()
+    fake.Repo.clone_from = MagicMock(return_value=repo)
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        _git_clone("https://example.com/repo.git", dest="/tmp/r", branch="dev")
+    call_kwargs = fake.Repo.clone_from.call_args.kwargs
+    assert call_kwargs.get("branch") == "dev"
+
+
+def test_git_clone_error():
+    from jarvis.tools.git_tools import _git_clone
+    fake, _ = _fake_git()
+    fake.Repo.clone_from = MagicMock(side_effect=RuntimeError("network down"))
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_clone("https://bad-url.com/repo.git")
+    assert "Clone error" in out
+
+
+# ── git_branch: create and checkout paths ────────────────────────────────────
+
+def test_git_branch_creates_new_branch():
+    from jarvis.tools.git_tools import _git_branch
+    fake, repo = _fake_git()
+    b_main = MagicMock(); b_main.name = "main"
+    repo.branches = [b_main]
+    repo.active_branch.name = "main"
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_branch(".", name="feature/new")
+    assert "Created branch" in out
+    repo.create_head.assert_called_once_with("feature/new")
+
+
+def test_git_branch_checkout_existing():
+    from jarvis.tools.git_tools import _git_branch
+    fake, repo = _fake_git()
+    b_main = MagicMock(); b_main.name = "main"
+    b_dev = MagicMock(); b_dev.name = "dev"
+    repo.branches = [b_main, b_dev]
+    repo.active_branch.name = "main"
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_branch(".", name="dev", checkout=True)
+    assert "Switched" in out
+
+
+def test_git_branch_error():
+    from jarvis.tools.git_tools import _git_branch
+    fake, repo = _fake_git()
+    fake.Repo.side_effect = RuntimeError("not a repo")
+    with patch.dict(__import__("sys").modules, {"git": fake}):
+        out = _git_branch("/no/such/dir")
+    assert "Branch error" in out or "error" in out.lower()
+
+
 # ── database_tools: missing sqlalchemy ───────────────────────────────────────
 
 def test_db_query_sqlalchemy_missing():
