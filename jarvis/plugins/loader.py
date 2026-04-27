@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from jarvis.tools.registry import ToolRegistry
 
 PLUGINS_DIR = Path(__file__).parent
+_LOADER_FILE = Path(__file__).name
 
 
 class PluginLoader:
@@ -23,24 +24,34 @@ class PluginLoader:
         self._watcher_thread: threading.Thread | None = None
         self._running = False
 
+    def _is_plugin_file(self, path: Path) -> bool:
+        """A plugin file is a non-underscore .py file other than the loader itself."""
+        if path.name.startswith("_"):
+            return False
+        if path.name == _LOADER_FILE:
+            return False
+        return True
+
     def load_all(self) -> int:
         """Load all plugins from the plugins directory. Returns count loaded."""
         count = 0
         for path in PLUGINS_DIR.glob("*.py"):
-            if path.name.startswith("_"):
+            if not self._is_plugin_file(path):
                 continue
             if self._load_plugin(path):
                 count += 1
         return count
 
     def _load_plugin(self, path: Path) -> bool:
+        # Always remember we've seen this file, so the hot-reload loop doesn't
+        # repeatedly re-import files that have no register_tools hook.
+        self._mtimes[str(path)] = path.stat().st_mtime
         try:
             spec = importlib.util.spec_from_file_location(f"jarvis.plugins.{path.stem}", path)
             mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
             spec.loader.exec_module(mod)  # type: ignore[union-attr]
             if hasattr(mod, "register_tools"):
                 mod.register_tools(self.registry)
-                self._mtimes[str(path)] = path.stat().st_mtime
                 print(f"[JARVIS Plugins] Loaded: {path.name}")
                 return True
             return False
@@ -66,7 +77,7 @@ class PluginLoader:
     def _watch_loop(self, interval: float) -> None:
         while self._running:
             for path in PLUGINS_DIR.glob("*.py"):
-                if path.name.startswith("_"):
+                if not self._is_plugin_file(path):
                     continue
                 key = str(path)
                 mtime = path.stat().st_mtime

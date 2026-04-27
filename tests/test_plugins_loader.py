@@ -133,6 +133,24 @@ def test_hot_reload_reloads_modified_plugin(loader, tmp_path, registry):
     assert registry.version == 2
 
 
+def test_load_all_skips_loader_file(loader, tmp_path):
+    """Regression: the loader must never treat its own loader.py as a plugin."""
+    (tmp_path / "loader.py").write_text("x = 42\n")
+    count = loader.load_all()
+    assert count == 0
+
+
+def test_hot_reload_does_not_loop_on_files_without_register_tools(loader, tmp_path):
+    """Regression: files without register_tools must be cached so the watcher
+    doesn't repeatedly re-import them and spam 'New plugin detected' forever."""
+    plugin = tmp_path / "nohook.py"
+    plugin.write_text("x = 42\n")
+    loader.load_all()
+    # Even though there's no register_tools, the mtime should be cached
+    # so the watcher's "key not in self._mtimes" check is False next time.
+    assert str(plugin) in loader._mtimes
+
+
 def test_watch_loop_reloads_changed_plugin(loader, tmp_path, registry):
     """Lines 76-78: _watch_loop reloads a plugin when its mtime increases."""
     import os
