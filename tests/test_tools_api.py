@@ -531,3 +531,61 @@ def test_read_rss_missing_feedparser():
     with patch.dict(sys.modules, {"feedparser": None}):
         out = _read_rss("http://example.com/rss")
     assert "not installed" in out.lower() or "error" in out.lower()
+
+
+# ── _ocr_image: success path with custom lang ─────────────────────────────────
+
+def test_ocr_image_success_with_lang():
+    fake_pytess = MagicMock()
+    fake_pytess.image_to_string = MagicMock(return_value="extracted text")
+    fake_img = MagicMock()
+    fake_pil = MagicMock()
+    fake_pil.Image.open = MagicMock(return_value=fake_img)
+    with patch.dict(sys.modules, {"pytesseract": fake_pytess, "PIL": fake_pil}):
+        out = _ocr_image("/tmp/test.png", lang="fra")
+    assert out == "extracted text"
+    fake_pytess.image_to_string.assert_called_once_with(fake_img, lang="fra")
+
+
+# ── _log_analyse: fatal and critical keyword detection ────────────────────────
+
+def test_log_analyse_counts_fatal_and_critical(tmp_path):
+    log = tmp_path / "sev.log"
+    log.write_text("FATAL system shutdown\nCRITICAL disk full\nINFO running\n")
+    out = _log_analyse(str(log))
+    assert "Errors: 2" in out
+
+
+def test_log_analyse_output_includes_log_content(tmp_path):
+    log = tmp_path / "out.log"
+    log.write_text("INFO line one\nINFO line two\n")
+    out = _log_analyse(str(log))
+    assert "line one" in out
+
+
+# ── _geocode: success returns multiple results ────────────────────────────────
+
+def test_geocode_returns_multiple_results():
+    fake_requests = MagicMock()
+    fake_resp = MagicMock()
+    fake_resp.json = MagicMock(return_value=[
+        {"display_name": "Paris, France", "lat": "48.8566", "lon": "2.3522"},
+        {"display_name": "Paris, Texas, USA", "lat": "33.66", "lon": "-95.55"},
+    ])
+    fake_requests.get = MagicMock(return_value=fake_resp)
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        out = _geocode("Paris")
+    assert "Paris, France" in out
+    assert "48.8566" in out
+
+
+# ── _list_prs: empty result ───────────────────────────────────────────────────
+
+def test_list_prs_empty():
+    repo = MagicMock()
+    repo.get_pulls = MagicMock(return_value=[])
+    gh = MagicMock()
+    gh.get_repo = MagicMock(return_value=repo)
+    with patch("jarvis.tools.github_tool._gh_client", return_value=gh):
+        out = _list_prs("me/foo")
+    assert "No PRs" in out
