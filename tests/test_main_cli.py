@@ -59,12 +59,11 @@ def _mock_jarvis(chat_reply: str = "Sir, how may I assist?"):
 # ── Banner is printed ─────────────────────────────────────────────────────────
 
 def test_status_command_prints_jarvis_status():
-    jarvis = _mock_jarvis()
-    with patch("jarvis.main._get_jarvis", return_value=jarvis):
-        result = runner.invoke(app, ["status"])
+    result = runner.invoke(app, ["status"])
 
     assert result.exit_code == 0
-    assert "JARVIS running" in result.stdout
+    assert "JARVIS Status" in result.stdout
+    assert "Tools" in result.stdout
 
 
 def test_tools_command_lists_registered_tools():
@@ -77,8 +76,12 @@ def test_tools_command_lists_registered_tools():
 
 
 def test_memory_command_displays_facts_and_lessons():
-    jarvis = _mock_jarvis()
-    with patch("jarvis.main._get_jarvis", return_value=jarvis):
+    fake_mem = MagicMock()
+    fake_mem.all_facts = MagicMock(return_value=[{"key": "lang", "value": "Python"}])
+    fake_mem.get_lessons = MagicMock(return_value=["learn A", "learn B"])
+    fake_mem.get_open_gaps = MagicMock(return_value=[{"id": 1, "description": "missing tool X"}])
+    fake_mem.summary = MagicMock(return_value="2 facts, 2 lessons, 1 gap")
+    with patch("jarvis.memory.store.MemoryStore", return_value=fake_mem):
         result = runner.invoke(app, ["memory"])
 
     assert result.exit_code == 0
@@ -88,11 +91,12 @@ def test_memory_command_displays_facts_and_lessons():
 
 
 def test_memory_command_no_facts():
-    jarvis = _mock_jarvis()
-    jarvis.memory.all_facts = MagicMock(return_value=[])
-    jarvis.memory.get_lessons = MagicMock(return_value=[])
-    jarvis.memory.get_open_gaps = MagicMock(return_value=[])
-    with patch("jarvis.main._get_jarvis", return_value=jarvis):
+    fake_mem = MagicMock()
+    fake_mem.all_facts = MagicMock(return_value=[])
+    fake_mem.get_lessons = MagicMock(return_value=[])
+    fake_mem.get_open_gaps = MagicMock(return_value=[])
+    fake_mem.summary = MagicMock(return_value="0 facts")
+    with patch("jarvis.memory.store.MemoryStore", return_value=fake_mem):
         result = runner.invoke(app, ["memory"])
     assert result.exit_code == 0
 
@@ -130,9 +134,10 @@ def test_chat_with_profile_flag():
 # ── export ────────────────────────────────────────────────────────────────────
 
 def test_export_markdown(tmp_path):
-    jarvis = _mock_jarvis()
+    fake_mem = MagicMock()
+    fake_mem.latest_session_id = MagicMock(return_value="session-xyz")
     out = tmp_path / "session.md"
-    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+    with patch("jarvis.memory.store.MemoryStore", return_value=fake_mem), \
          patch("jarvis.export.export_markdown", return_value="Exported markdown to out"):
         result = runner.invoke(app, ["export", "--format", "markdown", "--output", str(out)])
     assert result.exit_code == 0
@@ -140,12 +145,22 @@ def test_export_markdown(tmp_path):
 
 
 def test_export_pdf(tmp_path):
-    jarvis = _mock_jarvis()
-    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+    fake_mem = MagicMock()
+    fake_mem.latest_session_id = MagicMock(return_value="session-xyz")
+    with patch("jarvis.memory.store.MemoryStore", return_value=fake_mem), \
          patch("jarvis.export.export_pdf", return_value="PDF ok"):
         result = runner.invoke(app, ["export", "--format", "pdf"])
     assert result.exit_code == 0
     assert "PDF ok" in result.stdout
+
+
+def test_export_no_history():
+    fake_mem = MagicMock()
+    fake_mem.latest_session_id = MagicMock(return_value=None)
+    with patch("jarvis.memory.store.MemoryStore", return_value=fake_mem):
+        result = runner.invoke(app, ["export"])
+    assert result.exit_code == 0
+    assert "No conversation history" in result.stdout
 
 
 # ── benchmark ─────────────────────────────────────────────────────────────────

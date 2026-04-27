@@ -181,8 +181,27 @@ def voice() -> None:
 @app.command()
 def status() -> None:
     """Show JARVIS system status."""
-    jarvis = _get_jarvis()
-    console.print(Panel(jarvis.status(), title="JARVIS Status", border_style="cyan"))
+    from datetime import datetime, timezone
+    from jarvis.config import cfg
+    from jarvis.memory.semantic import SemanticMemory
+    from jarvis.memory.store import MemoryStore
+    from jarvis.tools.registry import build_registry
+
+    registry = build_registry()
+    mem = MemoryStore()
+    semantic = SemanticMemory()
+    dynamic = sum(1 for t in registry.all() if t.dynamic)
+    text = (
+        f"JARVIS — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"Model      : {cfg.CLAUDE_MODEL}\n"
+        f"Profile    : {cfg.DEFAULT_PROFILE}\n"
+        f"API key    : {'configured' if cfg.ANTHROPIC_API_KEY else 'NOT SET'}\n"
+        f"Tools      : {len(registry.all())} registered ({dynamic} dynamic)\n"
+        f"Voice      : {'enabled' if cfg.VOICE_ENABLED else 'disabled'} ({cfg.STT_ENGINE} STT / {cfg.TTS_ENGINE} TTS)\n"
+        f"Semantic   : {semantic.count()} vectors stored\n"
+        f"{mem.summary()}"
+    )
+    console.print(Panel(text, title="JARVIS Status", border_style="cyan"))
 
 
 # ── tools ─────────────────────────────────────────────────────────────────
@@ -190,13 +209,15 @@ def status() -> None:
 @app.command()
 def tools() -> None:
     """List all registered tools."""
-    jarvis = _get_jarvis()
+    from jarvis.tools.registry import build_registry
+
+    registry = build_registry()
     table = Table(title="JARVIS Tool Registry", border_style="cyan", show_lines=True)
     table.add_column("Name", style="bold")
     table.add_column("Category", style="dim")
     table.add_column("Dynamic", style="yellow")
     table.add_column("Description")
-    for t in sorted(jarvis.registry.all(), key=lambda x: (x.category, x.name)):
+    for t in sorted(registry.all(), key=lambda x: (x.category, x.name)):
         table.add_row(t.name, t.category, "✓" if t.dynamic else "", t.description[:70])
     console.print(table)
 
@@ -206,21 +227,22 @@ def tools() -> None:
 @app.command()
 def memory() -> None:
     """Show stored facts, lessons, and capability gaps."""
-    jarvis = _get_jarvis()
+    from jarvis.memory.store import MemoryStore
 
-    facts = jarvis.memory.all_facts()
+    mem = MemoryStore()
+    facts = mem.all_facts()
     if facts:
         console.print(Panel("\n".join(f"  {f['key']}: {f['value']}" for f in facts),
                             title="Stored Facts", border_style="blue"))
-    lessons = jarvis.memory.get_lessons(limit=20)
+    lessons = mem.get_lessons(limit=20)
     if lessons:
         console.print(Panel("\n".join(f"  • {lesson}" for lesson in lessons),
                             title="Lessons Learned", border_style="green"))
-    gaps = jarvis.memory.get_open_gaps()
+    gaps = mem.get_open_gaps()
     if gaps:
         console.print(Panel("\n".join(f"  [{g['id']}] {g['description']}" for g in gaps),
                             title="Open Capability Gaps", border_style="red"))
-    console.print(f"\n[dim]{jarvis.memory.summary()}[/dim]")
+    console.print(f"\n[dim]{mem.summary()}[/dim]")
 
 
 # ── export ────────────────────────────────────────────────────────────────
@@ -229,15 +251,23 @@ def memory() -> None:
 def export(
     fmt: str = typer.Option("markdown", "--format", "-f", help="markdown or pdf"),
     output: Optional[str] = typer.Option(None, "--output", "-o"),
+    session: Optional[str] = typer.Option(None, "--session", "-s",
+                                          help="Session ID to export (default: most recent)"),
 ) -> None:
     """Export conversation history."""
-    jarvis = _get_jarvis()
+    from jarvis.memory.store import MemoryStore
+
+    mem = MemoryStore()
+    session_id = session or mem.latest_session_id() or ""
+    if not session_id:
+        console.print("[yellow]No conversation history found.[/yellow]")
+        return
     if fmt == "pdf":
         from jarvis.export import export_pdf
-        msg = export_pdf(jarvis.memory, jarvis._session_id, output)
+        msg = export_pdf(mem, session_id, output)
     else:
         from jarvis.export import export_markdown
-        msg = export_markdown(jarvis.memory, jarvis._session_id, output)
+        msg = export_markdown(mem, session_id, output)
     console.print(msg)
 
 
