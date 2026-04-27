@@ -1,0 +1,125 @@
+[build-system]
+requires = ["setuptools>=60", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-openclaw"
+version = "4.0.0"
+description = "JARVIS — Just A Rather Very Intelligent System for OpenClaw."
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    # ── Anthropic Claude ──────────────────────────────────────────────
+    "anthropic>=0.40.0",
+
+    # ── Multi-provider ────────────────────────────────────────────────
+    "openai>=1.30.0",          # OpenRouter + OpenAI-compatible APIs
+    "ollama>=0.2.0",           # Local LLM
+
+    # ── Async & scheduling ────────────────────────────────────────────
+    "aiohttp>=3.10.0",
+    "aiofiles>=23.2.0",
+    "apscheduler>=3.10.0",
+    "websockets>=12.0",
+
+    # ── Web & search ──────────────────────────────────────────────────
+    "requests>=2.32.0",
+    "beautifulsoup4>=4.12.0",
+    "duckduckgo-search>=6.0.0",
+
+    # ── Browser automation ────────────────────────────────────────────
+    "playwright>=1.44.0",
+
+    # ── Sandbox backends ─────────────────────────────────────────────
+    "docker>=7.0.0",           # Docker sandbox
+    "paramiko>=3.4.0",         # SSH sandbox
+    "modal>=0.62.0",           # Modal serverless (free tier)
+
+    # ── Voice: Whisper STT (offline) ─────────────────────────────────
+    "openai-whisper>=20231117",
+    "SpeechRecognition>=3.10.0",
+    "pyaudio>=0.2.14",
+
+    # ── Voice: TTS ───────────────────────────────────────────────────
+    "pyttsx3>=2.90",
+    "elevenlabs>=1.5.0",
+
+    # ── Semantic memory ───────────────────────────────────────────────
+    "chromadb>=0.5.0",
+    "sentence-transformers>=3.0.0",
+
+    # ── Data & memory ─────────────────────────────────────────────────
+    "SQLAlchemy>=2.0.0",
+    "pydantic>=2.7.0",
+
+    # ── GitHub ────────────────────────────────────────────────────────
+    "PyGithub>=2.3.0",
+
+    # ── Platform bots ─────────────────────────────────────────────────
+    "python-telegram-bot>=21.0",
+    "discord.py>=2.3.0",
+    "slack-bolt>=1.18.0",      # Slack (free)
+    "twilio>=9.0.0",           # WhatsApp via Twilio sandbox (free)
+    "matrix-nio>=0.21.0",      # Matrix / Element
+    # IRC uses stdlib asyncio — no extra dep needed
+    # Mattermost uses websockets (already listed above)
+
+    # ── Documents & data ─────────────────────────────────────────────
+    "pdfplumber>=0.11.0",      # PDF text + table extraction
+    "openpyxl>=3.1.0",         # Excel read/write
+    "PyYAML>=6.0",             # YAML ↔ JSON transform
+    "boto3>=1.34.0",           # S3 / R2 / MinIO object storage
+    "gitpython>=3.1.40",       # Git tools
+
+    # ── Export & media ────────────────────────────────────────────────
+    "reportlab>=4.2.0",
+    "markdown2>=2.4.0",
+    "Pillow>=10.3.0",
+
+    # ── Notifications ─────────────────────────────────────────────────
+    "plyer>=2.1.0",
+
+    # ── System utilities ──────────────────────────────────────────────
+    "psutil>=5.9.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
+    "watchdog>=4.0.0",
+    "httpx>=0.27.0",
+
+    # ── HTTP server ───────────────────────────────────────────────────
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+ml = [
+    "torch>=2.0.0",
+    "diffusers>=0.27.0",
+    "transformers>=4.40.0",
+    "accelerate>=0.29.0",
+]
+ocr = [
+    "pytesseract>=0.3.10",
+    "Pillow>=10.3.0",
+]
+rss = [
+    "feedparser>=6.0.0",
+]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "black", "ruff"]
+
+[project.scripts]
+jarvis = "jarvis.main:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jarvis*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
