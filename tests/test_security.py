@@ -228,3 +228,72 @@ def test_keystore_list_keys_includes_all(tmp_path):
     keys = ks.list_keys()
     names = {k["name"] for k in keys}
     assert names == {"first", "second"}
+
+
+# ── KeyStore: corrupt JSON file is silently ignored ──────────────────────────
+
+def test_keystore_load_corrupt_json_starts_empty(tmp_path):
+    bad_path = tmp_path / "corrupt.json"
+    bad_path.write_text("{not valid json", encoding="utf-8")
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=bad_path)
+    assert ks.list_keys() == []
+
+
+# ── KeyStore: missing file starts with empty store ───────────────────────────
+
+def test_keystore_missing_file_starts_empty(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "nonexistent.json")
+    assert ks.list_keys() == []
+
+
+# ── sign_payload produces 64-char hex (SHA-256) ──────────────────────────────
+
+def test_sign_payload_is_sha256_hex():
+    from jarvis.security import sign_payload
+    sig = sign_payload("hello", "secret")
+    assert len(sig) == 64
+    assert all(c in "0123456789abcdef" for c in sig)
+
+
+# ── verify_signature rejects wrong secret ────────────────────────────────────
+
+def test_verify_signature_wrong_secret_returns_false():
+    from jarvis.security import sign_payload, verify_signature
+    sig = sign_payload("data", "correct-secret")
+    assert verify_signature("data", sig, "wrong-secret") is False
+
+
+# ── RateLimiter: bucket reset when window expires ────────────────────────────
+
+def test_rate_limiter_allows_after_window_expires():
+    from jarvis.security import RateLimiter
+    import time
+    rl = RateLimiter(limit=2, window=1)
+    assert rl.is_allowed("x") is True
+    assert rl.is_allowed("x") is True
+    assert rl.is_allowed("x") is False  # at limit
+    time.sleep(1.1)
+    assert rl.is_allowed("x") is True  # window expired, allowed again
+
+
+# ── ApiKey.to_dict masks the key ─────────────────────────────────────────────
+
+def test_api_key_to_dict_key_prefix_format():
+    from jarvis.security import ApiKey
+    key = ApiKey(key="jvs_abcdef1234567890", role="user", name="test")
+    d = key.to_dict()
+    assert d["key_prefix"].endswith("...")
+    assert d["key_prefix"].startswith("jvs_abc")
+    assert "key" not in d or "key_prefix" in d
+
+
+# ── KeyStore: generate key always starts with jvs_ and is unique ─────────────
+
+def test_keystore_all_generated_keys_start_with_jvs(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "k.json")
+    keys = [ks.generate(name=f"k{i}") for i in range(5)]
+    assert all(k.startswith("jvs_") for k in keys)
+    assert len(set(keys)) == 5  # all unique

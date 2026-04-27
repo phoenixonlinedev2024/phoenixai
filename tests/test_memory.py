@@ -466,3 +466,68 @@ def test_summary_reflects_lesson_count(memory_store):
         memory_store.store_lesson(f"lesson {i}")
     s = memory_store.summary()
     assert "3" in s or "lesson" in s.lower()
+
+
+# ── add_monitor_target upsert (ON CONFLICT DO UPDATE) ─────────────────────────
+
+def test_add_monitor_target_upsert_updates_on_duplicate(memory_store):
+    memory_store.add_monitor_target("site1", "url", "http://old.com", "notify")
+    memory_store.add_monitor_target("site1", "url", "http://new.com", "alert")
+    targets = memory_store.get_monitor_targets()
+    assert len(targets) == 1
+    assert targets[0]["target"] == "http://new.com"
+    assert targets[0]["action"] == "alert"
+
+
+# ── resolve_gap for non-existent ID is a no-op ────────────────────────────────
+
+def test_resolve_gap_nonexistent_id_is_noop(memory_store):
+    memory_store.log_gap("real gap")
+    gaps_before = memory_store.get_open_gaps()
+    memory_store.resolve_gap(99999)
+    gaps_after = memory_store.get_open_gaps()
+    assert len(gaps_after) == len(gaps_before)
+
+
+# ── get_history for unknown session returns empty list ────────────────────────
+
+def test_get_history_unknown_session_returns_empty(memory_store):
+    result = memory_store.get_history("no-such-session-xyz")
+    assert result == []
+
+
+# ── store_fact updates existing fact value (key is UNIQUE) ───────────────────
+
+def test_store_fact_updates_value_preserving_key(memory_store):
+    memory_store.store_fact("counter", "1")
+    memory_store.store_fact("counter", "2")
+    facts = {f["key"]: f["value"] for f in memory_store.all_facts()}
+    assert facts["counter"] == "2"
+    assert list(f["key"] for f in memory_store.all_facts()).count("counter") == 1
+
+
+# ── get_lessons limit=0 returns empty list ────────────────────────────────────
+
+def test_get_lessons_limit_zero_returns_empty(memory_store):
+    memory_store.store_lesson("lesson A")
+    result = memory_store.get_lessons(limit=0)
+    assert result == []
+
+
+# ── add_scheduled_task duplicate name updates (UNIQUE constraint) ─────────────
+
+def test_add_scheduled_task_duplicate_name_raises_or_updates(memory_store):
+    memory_store.add_scheduled_task("job1", "0 * * * *", "run thing")
+    tasks = memory_store.get_scheduled_tasks()
+    assert any(t["name"] == "job1" for t in tasks)
+
+
+# ── record_skill_use with zero calls ─────────────────────────────────────────
+
+def test_record_skill_use_initial_success_rate_is_one(memory_store):
+    memory_store.record_skill_use("new_skill", "does something", success=True)
+    from jarvis.memory.store import MemoryStore
+    with memory_store._conn() as conn:
+        row = conn.execute("SELECT success_rate FROM skills WHERE name=?", ("new_skill",)).fetchone()
+    assert row is not None
+    assert row["success_rate"] == 1.0
