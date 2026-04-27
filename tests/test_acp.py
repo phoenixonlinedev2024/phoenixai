@@ -314,3 +314,56 @@ def test_message_to_dict_all_fields():
     assert d["sender"] == "auth-svc"
     assert len(d["id"]) == 8  # hex[:8]
     assert "T" in d["timestamp"]  # ISO format
+
+
+# ── history(limit=0) returns all messages (Python -0 == 0 behavior) ─────────
+
+@pytest.mark.asyncio
+async def test_history_limit_zero_returns_all(bus):
+    """limit=0 uses msgs[-0:] == msgs[0:] — returns all messages."""
+    await bus.publish("t", payload="a")
+    await bus.publish("t", payload="b")
+    await bus.publish("t", payload="c")
+    h = bus.history(limit=0)
+    assert len(h) == 3
+
+
+# ── topics() only lists topics that still have subscriptions ─────────────────
+
+def test_topics_lists_only_subscribed(bus):
+    async def h(msg): pass
+    bus.subscribe("one", h)
+    bus.subscribe("two", h)
+    bus.unsubscribe("one", h)
+    # After unsubscribe, "one" still in _subs but with empty list
+    topics = bus.topics()
+    assert "two" in topics
+
+
+# ── history() topic filter returns only matching messages ────────────────────
+
+@pytest.mark.asyncio
+async def test_history_topic_filter_excludes_other_topics(bus):
+    await bus.publish("a.topic", payload="a message")
+    await bus.publish("b.topic", payload="b message")
+    h = bus.history(topic="a.topic")
+    assert all(m["topic"] == "a.topic" for m in h)
+    assert len(h) == 1
+
+
+# ── ACPMessage id is 8 hex chars ─────────────────────────────────────────────
+
+def test_acp_message_id_is_8_hex_chars():
+    from jarvis.acp import ACPMessage
+    msg = ACPMessage()
+    assert len(msg.id) == 8
+    assert all(c in "0123456789abcdef" for c in msg.id)
+
+
+# ── stats() before any messages ──────────────────────────────────────────────
+
+def test_stats_empty_bus(bus):
+    s = bus.stats()
+    assert s["topics"] == 0
+    assert s["history_size"] == 0
+    assert s["subscribers"] == {}
