@@ -557,3 +557,57 @@ def test_to_sharegpt_user_only_trajectory():
     out = to_sharegpt(tr)
     assert all(c["from"] == "human" for c in out["conversations"])
     assert len(out["conversations"]) == 2
+
+
+# ── export_dataset with empty collector produces empty file ──────────────────
+
+def test_export_dataset_empty_collector(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    (tmp_path / "trajectories").mkdir(parents=True, exist_ok=True)
+    from jarvis.research.trajectory import TrajectoryCollector
+    from jarvis.research.sharegpt import export_dataset
+    coll = TrajectoryCollector()
+    out_path = str(tmp_path / "empty.jsonl")
+    msg = export_dataset(coll, output_path=out_path)
+    assert "0 trajectories" in msg or "Exported 0" in msg
+    assert Path(out_path).exists()
+
+
+# ── export_atropos_format with empty collector ────────────────────────────────
+
+def test_export_atropos_empty_collector(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    (tmp_path / "trajectories").mkdir(parents=True, exist_ok=True)
+    from jarvis.research.trajectory import TrajectoryCollector
+    from jarvis.research.sharegpt import export_atropos_format
+    coll = TrajectoryCollector()
+    out_path = str(tmp_path / "empty_atropos.jsonl")
+    msg = export_atropos_format(coll, output_path=out_path)
+    assert "0 trajectories" in msg or "Exported 0" in msg
+    assert Path(out_path).exists()
+
+
+# ── compress_trajectory sets "compressed": True in metadata ──────────────────
+
+def test_compress_trajectory_sets_compressed_metadata():
+    tr = Trajectory(task="long task")
+    for i in range(25):
+        tr.add_turn("user" if i % 2 == 0 else "assistant", f"turn {i}")
+    compressed = compress_trajectory(tr, max_turns=10)
+    assert compressed.metadata.get("compressed") is True
+    assert compressed.metadata.get("original_turns") == 25
+
+
+# ── compress_trajectory preserves first + last turns ─────────────────────────
+
+def test_compress_trajectory_preserves_first_turn_content():
+    tr = Trajectory(task="task")
+    tr.add_turn("user", "very first message")
+    for i in range(25):
+        tr.add_turn("assistant" if i % 2 == 0 else "user", f"middle turn {i}")
+    tr.add_turn("assistant", "very last message")
+    compressed = compress_trajectory(tr, max_turns=5)
+    contents = [t.content for t in compressed.turns]
+    assert "very first message" in contents
