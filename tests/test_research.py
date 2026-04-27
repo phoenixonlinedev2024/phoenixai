@@ -611,3 +611,90 @@ def test_compress_trajectory_preserves_first_turn_content():
     compressed = compress_trajectory(tr, max_turns=5)
     contents = [t.content for t in compressed.turns]
     assert "very first message" in contents
+
+
+# ── export_dataset with compress=False ────────────────────────────────────────
+
+def test_export_dataset_no_compression(tmp_path, monkeypatch):
+    """compress=False exports all turns without running compress_trajectory."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    collector = TrajectoryCollector()
+    session = "no-compress-session"
+    collector.start(session, task="long task")
+    for i in range(25):
+        collector.record_turn(session, "user" if i % 2 == 0 else "assistant", f"msg {i}")
+    collector.complete(session, outcome="success", reward=1.0)
+
+    out_path = str(tmp_path / "no_compress.jsonl")
+    result = export_dataset(collector, output_path=out_path, min_reward=0.0, compress=False)
+
+    assert "Exported 1" in result
+    lines = Path(out_path).read_text().strip().splitlines()
+    record = json.loads(lines[0])
+    # Without compression the full 25 turns should be present (mapped to conversations)
+    assert len(record["conversations"]) == 25
+
+
+# ── export_dataset reward filter ─────────────────────────────────────────────
+
+def test_export_dataset_filters_by_min_reward(tmp_path, monkeypatch):
+    """Trajectories below min_reward are excluded."""
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    collector = TrajectoryCollector()
+    for session, reward in [("s1", 0.9), ("s2", 0.3)]:
+        collector.start(session, task="t")
+        collector.record_turn(session, "user", "go")
+        collector.record_turn(session, "assistant", "done")
+        collector.complete(session, outcome="success", reward=reward)
+
+    out_path = str(tmp_path / "filtered.jsonl")
+    result = export_dataset(collector, output_path=out_path, min_reward=0.5, compress=False)
+    assert "Exported 1" in result  # only the 0.9 trajectory
+
+
+# ── to_sharegpt with assistant turn having no content but tool calls ──────────
+
+def test_to_sharegpt_empty_content_with_tool_call():
+    """Assistant turn with empty content but a tool call uses tool_str alone."""
+    tr = Trajectory(id="tc1")
+    tr.add_turn("assistant", "", tool_calls=[{"name": "search", "input": {"q": "x"}}],
+                tool_results=[{"content": "result"}])
+    data = to_sharegpt(tr)
+    gpt_turn = data["conversations"][0]
+    assert gpt_turn["from"] == "gpt"
+    assert "search" in gpt_turn["value"]
+
+
+# ── Trajectory.set_outcome no assistant turn ──────────────────────────────────
+
+def test_set_outcome_with_no_assistant_turn():
+    """set_outcome is a no-op for reward backfill when no assistant turn exists."""
+    tr = Trajectory()
+    tr.add_turn("user", "hello")
+    tr.set_outcome("failure", reward=0.0)
+    assert tr.outcome == "failure"
+    assert tr.reward == 0.0
+    # User turn reward should remain None
+    assert tr.turns[0].reward is None
+
+
+# ── TrajectoryCollector.stats() all failures ──────────────────────────────────
+
+def test_collector_stats_all_failures(collector):
+    """stats() counts failures correctly and avg_reward is 0."""
+    collector.start("f1", task="t")
+    collector.record_turn("f1", "user", "go")
+    collector.complete("f1", outcome="failure", reward=0.0)
+
+    collector.start("f2", task="t")
+    collector.record_turn("f2", "user", "go")
+    collector.complete("f2", outcome="failure", reward=0.0)
+
+    stats = collector.stats()
+    assert stats["failure"] == 2
+    assert stats["success"] == 0
+    assert stats["avg_reward"] == pytest.approx(0.0)

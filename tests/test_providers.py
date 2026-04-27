@@ -513,3 +513,60 @@ def test_to_openai_messages_list_with_string_content():
     msgs = [{"role": "user", "content": "simple string"}]
     result = _to_openai_messages(msgs, system="")
     assert result[0]["content"] == "simple string"
+
+
+# ── create_message explicit provider failure raises RuntimeError ──────────────
+
+@pytest.mark.asyncio
+async def test_create_message_explicit_provider_failure_raises(monkeypatch):
+    """When a single explicit provider fails, RuntimeError is raised."""
+    router = ProviderRouter()
+    monkeypatch.setattr(
+        router, "_anthropic",
+        lambda: (_ for _ in ()).throw(RuntimeError("anthropic down")),
+    )
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("anthropic down")
+
+    client_mock = MagicMock()
+    client_mock.messages.create = _boom
+    monkeypatch.setattr(router, "_anthropic", lambda: client_mock)
+
+    with pytest.raises(RuntimeError, match="All providers failed"):
+        await router.create_message(
+            messages=[{"role": "user", "content": "hi"}],
+            provider="anthropic",
+        )
+
+
+# ── _call() with unknown provider raises ValueError ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_call_unknown_provider_raises_value_error():
+    """_call() with an unrecognised provider string raises ValueError."""
+    router = ProviderRouter()
+    with pytest.raises(ValueError, match="Unknown provider"):
+        await router._call("bogus_provider", [], "", None, 1024)
+
+
+# ── _to_openai_messages with no messages (empty list) ────────────────────────
+
+def test_to_openai_messages_empty_messages_no_system():
+    result = _to_openai_messages([], system="")
+    assert result == []
+
+
+def test_to_openai_messages_empty_messages_with_system():
+    result = _to_openai_messages([], system="You are a bot.")
+    assert len(result) == 1
+    assert result[0]["role"] == "system"
+
+
+# ── _to_openai_messages non-dict content block falls back to str() ─────────────
+
+def test_to_openai_messages_non_dict_block_in_list():
+    """Non-dict block in a list content falls back to str()."""
+    msgs = [{"role": "user", "content": ["plain string block"]}]
+    result = _to_openai_messages(msgs, system="")
+    assert "plain string block" in result[0]["content"]

@@ -493,3 +493,60 @@ def test_scheduled_job_defaults():
     assert job.run_count == 0
     assert job.error_count == 0
     assert job.tags == []
+
+
+# ── ScheduledJob.to_dict() priority is serialized as name ────────────────────
+
+def test_scheduled_job_to_dict_priority_as_string():
+    """priority field in to_dict() is the enum name, not the integer."""
+    from jarvis.scheduling import ScheduledJob, Priority
+    job = ScheduledJob(priority=Priority.HIGH)
+    d = job.to_dict()
+    assert d["priority"] == "HIGH"
+
+
+def test_scheduled_job_to_dict_critical_priority():
+    from jarvis.scheduling import ScheduledJob, Priority
+    job = ScheduledJob(priority=Priority.CRITICAL)
+    assert job.to_dict()["priority"] == "CRITICAL"
+
+
+# ── TaskQueue.history(limit=0) returns all (Python -0 == 0) ──────────────────
+
+def test_task_queue_history_limit_zero_returns_all():
+    """history(limit=0) → msgs[-0:] == msgs[0:] returns all entries."""
+    from jarvis.scheduling import TaskQueue
+    queue = TaskQueue()
+    for i in range(5):
+        queue._history.append({"id": str(i), "status": "success", "name": f"t{i}",
+                                "started": "t", "finished": "t"})
+    assert len(queue.history(limit=0)) == 5
+
+
+# ── NLScheduler.add() passes through a valid 5-word cron directly ─────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_add_passthrough_cron():
+    """A 5-part string is treated as a cron expression and stored as-is."""
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    job = await sched.add("cron-job", "30 6 * * 1", "morning report")
+    assert job.cron == "30 6 * * 1"
+
+
+# ── NLScheduler.run_now() increments error_count on exhausted retries ─────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_run_now_increments_error_count():
+    """Exhausting all retries bumps job.error_count by 1."""
+    from jarvis.scheduling import NLScheduler
+    from unittest.mock import AsyncMock, patch
+    j = _fake_jarvis()
+    j.chat = AsyncMock(side_effect=RuntimeError("always fails"))
+    sched = NLScheduler(j)
+    # max_retries=0 → one attempt only, no sleep between retries
+    job = await sched.add("fail-job", "every hour", "task", max_retries=0)
+    with patch("asyncio.sleep", AsyncMock()):
+        await sched.run_now(job.id)
+    assert job.error_count == 1
+    assert "failed" in job.last_status

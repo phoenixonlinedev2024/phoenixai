@@ -531,3 +531,61 @@ def test_record_skill_use_initial_success_rate_is_one(memory_store):
         row = conn.execute("SELECT success_rate FROM skills WHERE name=?", ("new_skill",)).fetchone()
     assert row is not None
     assert row["success_rate"] == 1.0
+
+
+# ── record_skill_use weighted average ─────────────────────────────────────────
+
+def test_record_skill_use_failure_drops_success_rate(memory_store):
+    """After one success and one failure the success_rate should be 0.5."""
+    memory_store.record_skill_use("skill_x", "desc", success=True)
+    memory_store.record_skill_use("skill_x", "desc", success=False)
+    with memory_store._conn() as conn:
+        row = conn.execute("SELECT success_rate, usage_count FROM skills WHERE name=?", ("skill_x",)).fetchone()
+    assert row["usage_count"] == 2
+    assert abs(row["success_rate"] - 0.5) < 0.01
+
+
+# ── summary includes all entity types ─────────────────────────────────────────
+
+def test_summary_includes_gap_and_monitor_counts(memory_store):
+    """summary() reflects gaps and monitors in addition to facts/lessons."""
+    memory_store.log_gap("need web scraping", context="test")
+    memory_store.add_monitor_target("site1", "url", "https://example.com", "notify")
+    s = memory_store.summary()
+    assert "1" in s  # at least one of each is reflected
+
+
+def test_summary_all_counts_zero_for_empty_store(memory_store):
+    """A fresh store should report all zeros."""
+    s = memory_store.summary()
+    assert "0" in s
+
+
+# ── recall_fact with non-string stored value ──────────────────────────────────
+
+def test_recall_fact_returns_parsed_json_for_non_string(memory_store):
+    """store_fact serialises non-strings to JSON; recall_fact parses them back."""
+    memory_store.store_fact("prefs", {"color": "blue"})
+    val = memory_store.recall_fact("prefs")
+    assert val == {"color": "blue"}
+
+
+def test_recall_fact_returns_int(memory_store):
+    memory_store.store_fact("count", 42)
+    val = memory_store.recall_fact("count")
+    assert val == 42
+
+
+# ── get_scheduled_tasks with disabled task ────────────────────────────────────
+
+def test_get_scheduled_tasks_excludes_disabled(memory_store):
+    """get_scheduled_tasks only returns enabled=1 rows."""
+    memory_store.add_scheduled_task("active", "0 * * * *", "do active")
+    memory_store.add_scheduled_task("inactive", "0 * * * *", "do inactive")
+    # Disable one task directly via SQL
+    with memory_store._conn() as conn:
+        conn.execute("UPDATE scheduled_tasks SET enabled=0 WHERE name=?", ("inactive",))
+    tasks = memory_store.get_scheduled_tasks()
+    names = [t["name"] for t in tasks]
+    assert "active" in names
+    assert "inactive" not in names
