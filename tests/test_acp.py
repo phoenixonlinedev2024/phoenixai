@@ -367,3 +367,79 @@ def test_stats_empty_bus(bus):
     assert s["topics"] == 0
     assert s["history_size"] == 0
     assert s["subscribers"] == {}
+
+
+# ── stats() reflects subscriber counts after subscribe/unsubscribe ────────────
+
+def test_stats_reflects_subscriber_count_after_subscribe(bus):
+    async def h(msg): pass
+    bus.subscribe("events", h)
+    s = bus.stats()
+    assert s["subscribers"]["events"] == 1
+
+
+def test_stats_after_unsubscribe_shows_zero_handlers(bus):
+    async def h(msg): pass
+    bus.subscribe("events", h)
+    bus.unsubscribe("events", h)
+    s = bus.stats()
+    assert s["subscribers"]["events"] == 0
+
+
+# ── ACPMessage to_dict() includes all expected fields ─────────────────────────
+
+def test_acp_message_to_dict_has_all_keys():
+    msg = ACPMessage(topic="t.t", payload={"key": "val"}, sender="bot")
+    d = msg.to_dict()
+    assert "id" in d
+    assert "topic" in d
+    assert "payload" in d
+    assert "sender" in d
+    assert "timestamp" in d
+    assert d["topic"] == "t.t"
+    assert d["sender"] == "bot"
+    assert d["payload"] == {"key": "val"}
+
+
+# ── history() limit=0 slices [-0:] which is all messages ─────────────────────
+
+@pytest.mark.asyncio
+async def test_history_all_messages_when_limit_exceeds_count(bus):
+    """History with limit larger than stored messages returns everything."""
+    await bus.publish("a", payload=1)
+    await bus.publish("a", payload=2)
+    h = bus.history(limit=100)
+    assert len(h) == 2
+
+
+# ── publish with no subscribers still appends to history ─────────────────────
+
+@pytest.mark.asyncio
+async def test_publish_to_unsubscribed_topic_still_recorded(bus):
+    """Messages published to topics with no subscribers still appear in history."""
+    await bus.publish("no.listeners", payload="silent")
+    h = bus.history(topic="no.listeners")
+    assert len(h) == 1
+    assert h[0]["payload"] == "silent"
+
+
+# ── history() without topic returns all topics ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_history_no_topic_returns_all(bus):
+    await bus.publish("topic.a", payload="a")
+    await bus.publish("topic.b", payload="b")
+    h = bus.history()
+    assert len(h) == 2
+
+
+# ── subscribe same handler twice duplicates delivery ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_subscribe_same_handler_twice_receives_twice(bus):
+    received = []
+    async def h(msg): received.append(msg)
+    bus.subscribe("dupe", h)
+    bus.subscribe("dupe", h)
+    await bus.publish("dupe", payload="x")
+    assert len(received) == 2

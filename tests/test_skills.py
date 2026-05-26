@@ -287,3 +287,95 @@ def test_summary_counts_correctly(registry):
     summary = registry.summary()
     assert "3 skills" in summary
     assert "2 auto-generated" in summary
+
+
+# ── SkillRegistry.increment_usage edge cases ─────────────────────────────────
+
+def test_increment_usage_nonexistent_skill_is_silent(registry):
+    """increment_usage on a name not in _skills should not raise."""
+    registry.increment_usage("does_not_exist")  # should not raise
+
+
+def test_increment_usage_increments_count(registry):
+    """increment_usage bumps usage_count by 1 each call."""
+    from jarvis.skills.registry import Skill
+    registry.register(Skill("counter", "d", "p"))
+    assert registry.get("counter").usage_count == 0
+    registry.increment_usage("counter")
+    assert registry.get("counter").usage_count == 1
+    registry.increment_usage("counter")
+    assert registry.get("counter").usage_count == 2
+
+
+# ── SkillRegistry persistence: generated skills are saved but builtins are not ─
+
+def test_generated_skill_persisted_on_register(tmp_path, monkeypatch):
+    """Generated skills are written to the JSON persist file."""
+    from jarvis.config import cfg
+    from jarvis.skills.registry import Skill, SkillRegistry
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    reg = SkillRegistry()
+    reg.register(Skill("gen_skill", "gen desc", "gen prompt", created_by="generated"))
+    persist = tmp_path / "skills.json"
+    assert persist.exists()
+    data = json.loads(persist.read_text())
+    assert "gen_skill" in data
+
+
+def test_builtin_skill_not_persisted(tmp_path, monkeypatch):
+    """Builtin skills are NOT written to the JSON persist file."""
+    from jarvis.config import cfg
+    from jarvis.skills.registry import Skill, SkillRegistry
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    reg = SkillRegistry()
+    reg.register(Skill("builtin_tool", "desc", "prompt", created_by="builtin"))
+    persist = tmp_path / "skills.json"
+    if persist.exists():
+        data = json.loads(persist.read_text())
+        assert "builtin_tool" not in data
+
+
+# ── SkillRegistry._load: persisted skills survive reload ─────────────────────
+
+def test_persisted_generated_skill_loads_on_new_registry(tmp_path, monkeypatch):
+    """Generated skills saved on one SkillRegistry instance load on a fresh one."""
+    from jarvis.config import cfg
+    from jarvis.skills.registry import Skill, SkillRegistry
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    r1 = SkillRegistry()
+    r1.register(Skill("persistent_gen", "desc", "prompt", created_by="generated"))
+
+    r2 = SkillRegistry()
+    assert r2.get("persistent_gen") is not None
+
+
+# ── SkillRegistry.search empty query returns all ─────────────────────────────
+
+def test_search_empty_query_returns_all(registry):
+    """Empty query string matches everything (all fields contain '')."""
+    from jarvis.skills.registry import Skill
+    registry.register(Skill("alpha", "desc a", "p"))
+    registry.register(Skill("beta", "desc b", "p"))
+    results = registry.search("")
+    names = [s.name for s in results]
+    assert "alpha" in names
+    assert "beta" in names
+
+
+# ── Skill.from_dict roundtrip for user-created skill ─────────────────────────
+
+def test_skill_from_dict_user_created():
+    """from_dict works with created_by='user'."""
+    from jarvis.skills.registry import Skill
+    d = {
+        "name": "user_skill",
+        "description": "user desc",
+        "system_prompt": "user prompt",
+        "tags": ["custom"],
+        "usage_count": 5,
+        "created_by": "user",
+    }
+    skill = Skill.from_dict(d)
+    assert skill.created_by == "user"
+    assert skill.usage_count == 5
+    assert skill.tags == ["custom"]

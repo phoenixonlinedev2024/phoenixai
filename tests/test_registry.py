@@ -886,3 +886,101 @@ def test_api_call_json_parse_error_returns_text_response():
         mock_req.return_value = resp
         out = _api_call("https://example.com")
     assert "plain text response" in out
+
+
+# ── Tool.to_anthropic() format ────────────────────────────────────────────────
+
+def test_tool_to_anthropic_includes_required_keys():
+    """Tool.to_anthropic() returns name, description, and input_schema."""
+    from jarvis.tools.registry import Tool
+    t = Tool(
+        name="my_tool",
+        description="Does something.",
+        input_schema={"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        fn=lambda x: x,
+    )
+    d = t.to_anthropic()
+    assert d["name"] == "my_tool"
+    assert d["description"] == "Does something."
+    assert "input_schema" in d
+
+
+# ── Tool.run() calls fn with kwargs ──────────────────────────────────────────
+
+def test_tool_run_passes_kwargs_to_fn():
+    """Tool.run() forwards all keyword arguments to the wrapped function."""
+    from jarvis.tools.registry import Tool
+    results = []
+    def my_fn(x, y):
+        results.append((x, y))
+        return f"{x}+{y}"
+    t = Tool(name="add", description="add", input_schema={}, fn=my_fn)
+    out = t.run(x=3, y=4)
+    assert out == "3+4"
+    assert results == [(3, 4)]
+
+
+# ── ToolRegistry.anthropic_tools() returns list of dicts ─────────────────────
+
+def test_anthropic_tools_returns_list_of_dicts():
+    """anthropic_tools() returns a list with name, description, input_schema keys."""
+    from jarvis.tools.registry import Tool, ToolRegistry
+    reg = ToolRegistry()
+    reg.register(Tool("t1", "desc1", {"type": "object"}, fn=lambda: None))
+    reg.register(Tool("t2", "desc2", {"type": "object"}, fn=lambda: None))
+    tools = reg.anthropic_tools()
+    assert len(tools) == 2
+    for t in tools:
+        assert "name" in t
+        assert "description" in t
+        assert "input_schema" in t
+
+
+# ── ToolRegistry.names() returns registered tool names ────────────────────────
+
+def test_registry_names_returns_all_registered():
+    from jarvis.tools.registry import Tool, ToolRegistry
+    reg = ToolRegistry()
+    reg.register(Tool("alpha", "d", {}, fn=lambda: None))
+    reg.register(Tool("beta", "d", {}, fn=lambda: None))
+    names = reg.names()
+    assert "alpha" in names
+    assert "beta" in names
+    assert len(names) == 2
+
+
+# ── _web_search with no results returns the 'No results' message ─────────────
+
+def test_web_search_no_results_message():
+    """_web_search returns 'No results found.' when DDGS returns empty list."""
+    fake_ddgs_instance = MagicMock()
+    fake_ddgs_instance.__enter__ = MagicMock(return_value=fake_ddgs_instance)
+    fake_ddgs_instance.__exit__ = MagicMock(return_value=False)
+    fake_ddgs_instance.text = MagicMock(return_value=[])
+    fake_module = MagicMock()
+    fake_module.DDGS = MagicMock(return_value=fake_ddgs_instance)
+    with patch.dict(sys.modules, {"duckduckgo_search": fake_module}):
+        out = _web_search("obscure query xyz")
+    assert out == "No results found."
+
+
+# ── _run_shell with cwd parameter ────────────────────────────────────────────
+
+def test_run_shell_with_cwd(tmp_path):
+    """_run_shell passes cwd to subprocess.run."""
+    out = _run_shell("pwd", cwd=str(tmp_path))
+    assert str(tmp_path) in out
+
+
+# ── Tool.dynamic flag defaults to False ──────────────────────────────────────
+
+def test_tool_dynamic_defaults_to_false():
+    from jarvis.tools.registry import Tool
+    t = Tool("t", "d", {}, fn=lambda: None)
+    assert t.dynamic is False
+
+
+def test_tool_dynamic_can_be_set_true():
+    from jarvis.tools.registry import Tool
+    t = Tool("t", "d", {}, fn=lambda: None, dynamic=True)
+    assert t.dynamic is True
