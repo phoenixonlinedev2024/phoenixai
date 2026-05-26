@@ -550,3 +550,54 @@ async def test_nl_scheduler_run_now_increments_error_count():
         await sched.run_now(job.id)
     assert job.error_count == 1
     assert "failed" in job.last_status
+
+
+# ── TaskQueue.history() with limit > history size returns all ─────────────────
+
+def test_task_queue_history_limit_larger_than_history():
+    """history(limit=100) when only 3 entries exist returns all 3."""
+    from jarvis.scheduling import TaskQueue
+    queue = TaskQueue()
+    for i in range(3):
+        queue._history.append({"id": str(i), "name": f"t{i}", "status": "ok",
+                                "started": "s", "finished": "f"})
+    result = queue.history(limit=100)
+    assert len(result) == 3
+
+
+# ── ScheduledJob.enabled defaults to True ────────────────────────────────────
+
+def test_scheduled_job_enabled_default():
+    """ScheduledJob.enabled is True by default."""
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob(name="test")
+    assert job.enabled is True
+
+
+# ── NLScheduler.add() stores job in _jobs dict ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_add_stores_job_in_dict():
+    """add() inserts the new ScheduledJob into _jobs under its id."""
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    job = await sched.add("myjob", "every day", "do something")
+    assert job.id in sched._jobs
+    assert sched._jobs[job.id] is job
+
+
+# ── NLScheduler.run_now() success path updates run_count ─────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_run_now_success_updates_run_count():
+    """Successful run_now increments job.run_count and sets last_status."""
+    from jarvis.scheduling import NLScheduler
+    from unittest.mock import AsyncMock
+    j = _fake_jarvis()
+    j.chat = AsyncMock(return_value="done!")
+    sched = NLScheduler(j)
+    job = await sched.add("ok-job", "every hour", "some prompt")
+    result = await sched.run_now(job.id)
+    assert result == "done!"
+    assert job.run_count == 1
+    assert job.last_status == "success"

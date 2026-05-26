@@ -589,3 +589,44 @@ def test_get_scheduled_tasks_excludes_disabled(memory_store):
     names = [t["name"] for t in tasks]
     assert "active" in names
     assert "inactive" not in names
+
+
+def test_search_facts_empty_query_returns_all_facts(memory_store):
+    """search_facts('') matches all facts (up to limit 20)."""
+    memory_store.store_fact("alpha", "value1")
+    memory_store.store_fact("beta", "value2")
+    results = memory_store.search_facts("")
+    keys = [r["key"] for r in results]
+    assert "alpha" in keys
+    assert "beta" in keys
+
+
+def test_get_open_gaps_returns_empty_initially(memory_store):
+    """Fresh store has no open gaps."""
+    assert memory_store.get_open_gaps() == []
+
+
+def test_get_monitor_targets_returns_empty_initially(memory_store):
+    """Fresh store has no monitor targets."""
+    assert memory_store.get_monitor_targets() == []
+
+
+def test_all_facts_returns_empty_initially(memory_store):
+    """all_facts() on a fresh store returns an empty list."""
+    assert memory_store.all_facts() == []
+
+
+def test_search_facts_returns_confidence(memory_store):
+    """search_facts includes confidence in results."""
+    memory_store.store_fact("mykey", "myval", confidence=0.77)
+    results = memory_store.search_facts("mykey")
+    assert len(results) == 1
+    assert abs(results[0]["confidence"] - 0.77) < 1e-6
+
+
+def test_store_lesson_context_stored(memory_store):
+    """store_lesson saves the context string alongside the lesson."""
+    memory_store.store_lesson("lesson text", context="test context")
+    with memory_store._conn() as conn:
+        row = conn.execute("SELECT context FROM lessons").fetchone()
+    assert row["context"] == "test context"

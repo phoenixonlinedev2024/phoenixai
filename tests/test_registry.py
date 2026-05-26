@@ -698,3 +698,102 @@ def test_tool_to_anthropic_includes_input_schema():
     assert d["input_schema"] == schema
     assert "description" in d
     assert d["name"] == "test_t"
+
+
+# ── Additional coverage ────────────────────────────────────────────────────────
+
+def test_web_search_max_results_forwarded_to_ddgs():
+    """_web_search passes max_results to DDGS.text()."""
+    fake_ddgs = MagicMock()
+    fake_ddgs.__enter__ = MagicMock(return_value=fake_ddgs)
+    fake_ddgs.__exit__ = MagicMock(return_value=False)
+    fake_ddgs.text = MagicMock(return_value=[{"title": "T", "href": "http://x", "body": "b"}])
+    fake_module = MagicMock()
+    fake_module.DDGS = MagicMock(return_value=fake_ddgs)
+    with patch.dict(sys.modules, {"duckduckgo_search": fake_module}):
+        _web_search("test", max_results=7)
+    fake_ddgs.text.assert_called_once_with("test", max_results=7)
+
+
+def test_web_fetch_http_error_returns_fetch_error():
+    """_web_fetch returns error string when raise_for_status raises."""
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.side_effect = Exception("404 Not Found")
+    fake_requests = MagicMock()
+    fake_requests.get = MagicMock(return_value=fake_resp)
+    fake_bs4 = MagicMock()
+    with patch.dict(sys.modules, {"requests": fake_requests, "bs4": fake_bs4}):
+        out = _web_fetch("https://example.com/notfound")
+    assert "Fetch error" in out
+    assert "404" in out
+
+
+def test_api_call_put_method():
+    """_api_call sends PUT request and returns JSON response."""
+    with patch("requests.request") as mock_req:
+        resp = MagicMock()
+        resp.json.return_value = {"updated": True}
+        mock_req.return_value = resp
+        out = _api_call("https://api.example.com/item/1", method="PUT", body={"name": "new"})
+    mock_req.assert_called_once()
+    call_args = mock_req.call_args
+    assert call_args[0][0] == "PUT"
+    assert "updated" in out
+
+
+def test_api_call_custom_headers_forwarded():
+    """_api_call passes the headers dict to requests.request."""
+    with patch("requests.request") as mock_req:
+        resp = MagicMock()
+        resp.json.return_value = {}
+        mock_req.return_value = resp
+        custom_headers = {"Authorization": "Bearer token123"}
+        _api_call("https://api.example.com/data", headers=custom_headers)
+    _, kwargs = mock_req.call_args
+    assert kwargs["headers"] == custom_headers
+
+
+def test_api_call_delete_method_returns_json():
+    """_api_call sends DELETE request and returns JSON."""
+    with patch("requests.request") as mock_req:
+        resp = MagicMock()
+        resp.json.return_value = {"deleted": True}
+        mock_req.return_value = resp
+        out = _api_call("https://api.example.com/item/99", method="DELETE")
+    assert "deleted" in out
+    call_method = mock_req.call_args[0][0]
+    assert call_method == "DELETE"
+
+
+def test_get_system_info_format_has_cpu_memory_disk():
+    """_get_system_info returns string with CPU, Memory, Disk sections."""
+    fake_mem = MagicMock()
+    fake_mem.percent = 42.0
+    fake_mem.used = 1024 ** 3  # 1 GB
+    fake_mem.total = 4 * 1024 ** 3
+    fake_disk = MagicMock()
+    fake_disk.percent = 75.0
+    fake_disk.used = 50 * 1024 ** 3
+    fake_disk.total = 100 * 1024 ** 3
+    fake_psutil = MagicMock()
+    fake_psutil.cpu_percent = MagicMock(return_value=33.5)
+    fake_psutil.virtual_memory = MagicMock(return_value=fake_mem)
+    fake_psutil.disk_usage = MagicMock(return_value=fake_disk)
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        out = _get_system_info()
+    assert "CPU" in out
+    assert "33.5" in out
+    assert "Memory" in out
+    assert "42.0" in out
+    assert "Disk" in out
+    assert "75.0" in out
+
+
+def test_build_registry_nlp_cron_and_sandbox_tools_registered():
+    """build_registry registers tools from nlp_cron and sandbox_tools modules."""
+    from jarvis.tools.registry import build_registry
+    reg = build_registry()
+    names = reg.names()
+    assert "nl_to_cron" in names
+    assert "sandbox_run" in names
+    assert "sandbox_run_code" in names

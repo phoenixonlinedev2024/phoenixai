@@ -224,3 +224,41 @@ def test_snapshot_histogram_fields_present(reg):
     assert "avg_ms" in h
     assert "p95_ms" in h
     assert "p99_ms" in h
+
+
+def test_time_context_manager_records_on_exception(reg):
+    """time() records the observation even when the body raises."""
+    with pytest.raises(ValueError):
+        with reg.time("op_with_error"):
+            raise ValueError("boom")
+    assert reg.histogram("op_with_error").count == 1
+
+
+async def test_atime_context_manager_records_on_exception(reg):
+    """atime() records the observation even when the body raises."""
+    with pytest.raises(RuntimeError):
+        async with reg.atime("async_op_error"):
+            raise RuntimeError("async boom")
+    assert reg.histogram("async_op_error").count == 1
+
+
+def test_snapshot_timestamp_key_present(reg):
+    """snapshot() dict includes a 'timestamp' ISO string."""
+    snap = reg.snapshot()
+    assert "timestamp" in snap
+    assert "T" in snap["timestamp"]  # ISO format contains 'T'
+
+
+def test_observe_auto_creates_histogram(reg):
+    """observe() on a new metric name creates the histogram automatically."""
+    reg.observe("brand_new_metric", 1.5)
+    assert reg.histogram("brand_new_metric").count == 1
+    assert abs(reg.histogram("brand_new_metric").avg - 1.5) < 1e-9
+
+
+def test_prometheus_text_includes_histogram_count_and_sum(reg):
+    """prometheus_text includes _count and _sum lines for each histogram."""
+    reg.observe("request.latency", 0.2)
+    text = reg.prometheus_text()
+    assert "request_latency_count" in text
+    assert "request_latency_sum" in text
