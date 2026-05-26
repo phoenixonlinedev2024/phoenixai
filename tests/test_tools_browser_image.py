@@ -402,3 +402,52 @@ def test_sandbox_tools_register():
     assert registry.get("sandbox_run") is not None
     assert registry.get("sandbox_run_code") is not None
     assert registry.get("list_sandbox_backends") is not None
+
+
+# ── sandbox_tools: list_backends output ──────────────────────────────────────
+
+def test_list_sandbox_backends_returns_available_prefix():
+    fake_router = MagicMock()
+    fake_router.list_backends.return_value = ["local", "docker"]
+    with patch("jarvis.tools.sandbox_tools._get_router", return_value=fake_router):
+        out = sandbox_tools._list_sandbox_backends()
+    assert out.startswith("Available backends:")
+
+
+def test_sandbox_run_exception_in_asyncio_run():
+    sandbox_tools._router = None
+    fake_router = MagicMock()
+    import asyncio
+    with patch("jarvis.tools.sandbox_tools._get_router", return_value=fake_router), \
+         patch.object(asyncio, "run", side_effect=RuntimeError("sandbox crashed")):
+        out = sandbox_tools._sandbox_run("echo hi")
+    assert "Sandbox error" in out
+
+
+# ── browser: fill form / screenshot error strings ───────────────────────────
+
+def test_browser_fill_form_error_without_playwright_detail():
+    with patch.dict(sys.modules, {"playwright": None, "playwright.async_api": None}):
+        import asyncio
+        with patch.object(asyncio, "run", return_value="Form fill error: import error"):
+            out = _browser_fill_form("http://x.com", {"#f": "val"}, "#btn")
+    assert "error" in out.lower() or "Form" in out
+
+
+def test_take_screenshot_with_custom_output_path():
+    with patch.dict(sys.modules, {"playwright": None, "playwright.async_api": None}):
+        import asyncio
+        with patch.object(asyncio, "run", return_value="Screenshot saved to /custom/path.png"):
+            out = _take_screenshot("http://example.com", output_path="/custom/path.png")
+    assert "/custom/path.png" in out or "Screenshot" in out
+
+
+# ── browser: register_tools populates all tools ──────────────────────────────
+
+def test_browser_register_tools_has_all_four():
+    from jarvis.tools.registry import build_registry
+    from jarvis.tools.browser import register_tools
+    registry = build_registry()
+    register_tools(registry)
+    for name in ("browser_fetch", "browser_click", "browser_fill_form", "take_screenshot"):
+        assert registry.get(name) is not None

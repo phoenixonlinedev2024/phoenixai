@@ -511,3 +511,53 @@ async def test_monitor_hash_static_method():
     assert h1 == h2
     assert len(h1) == 64  # SHA-256 hex digest length
     assert h1 != ProactiveMonitor._hash("different content")
+
+
+# ── ProactiveMonitor initial state ────────────────────────────────────────────
+
+def test_monitor_running_false_initially():
+    jarvis = MagicMock()
+    mon = ProactiveMonitor(jarvis)
+    assert mon._running is False
+
+
+def test_monitor_jarvis_attribute():
+    jarvis = MagicMock()
+    mon = ProactiveMonitor(jarvis)
+    assert mon.jarvis is jarvis
+
+
+def test_monitor_stop_sets_running_false():
+    jarvis = MagicMock()
+    mon = ProactiveMonitor(jarvis)
+    mon._running = True
+    mon.stop()
+    assert mon._running is False
+
+
+# ── export_markdown: session ID in output ────────────────────────────────────
+
+def test_export_markdown_includes_session_id(memory_store, tmp_path):
+    session_id = "session-xyz-789"
+    memory_store.save_message(session_id, "user", "hello")
+    memory_store.save_message(session_id, "assistant", "hi there")
+    out_path = str(tmp_path / "out.md")
+    result = export_markdown(memory_store, session_id, output_path=out_path)
+    content = Path(out_path).read_text()
+    assert session_id in content
+
+
+def test_export_markdown_jarvis_role_formatting(memory_store, tmp_path):
+    session_id = "fmt-test"
+    memory_store.save_message(session_id, "assistant", "I am JARVIS.")
+    out_path = str(tmp_path / "fmt.md")
+    export_markdown(memory_store, session_id, output_path=out_path)
+    content = Path(out_path).read_text()
+    assert "JARVIS" in content
+
+
+# ── _hash: hex format ────────────────────────────────────────────────────────
+
+def test_monitor_hash_is_hex_string():
+    h = ProactiveMonitor._hash("any text")
+    assert all(c in "0123456789abcdef" for c in h)
