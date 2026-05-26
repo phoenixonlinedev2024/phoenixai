@@ -738,3 +738,86 @@ def test_scheduled_job_to_dict_run_count():
 def test_priority_critical_is_highest():
     from jarvis.scheduling import Priority
     assert Priority.CRITICAL > Priority.HIGH > Priority.NORMAL > Priority.LOW
+
+
+# ── ScheduledJob.id is 8-char hex ─────────────────────────────────────────────
+
+def test_scheduled_job_id_is_8_char_hex():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    assert len(job.id) == 8
+    assert all(c in "0123456789abcdef" for c in job.id)
+
+
+def test_scheduled_job_ids_are_unique():
+    from jarvis.scheduling import ScheduledJob
+    ids = {ScheduledJob().id for _ in range(20)}
+    assert len(ids) == 20
+
+
+# ── ScheduledJob.to_dict priority is a string ────────────────────────────────
+
+def test_scheduled_job_to_dict_priority_is_string():
+    from jarvis.scheduling import ScheduledJob, Priority
+    job = ScheduledJob()
+    job.priority = Priority.HIGH
+    d = job.to_dict()
+    assert d["priority"] == "HIGH"
+
+
+def test_scheduled_job_to_dict_enabled_default_true():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    assert job.to_dict()["enabled"] is True
+
+
+# ── NLScheduler.add with tags ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_add_stores_tags():
+    from jarvis.scheduling import NLScheduler, Priority
+    jarvis = MagicMock()
+    jarvis.memory.add_scheduled_task = MagicMock()
+    sched = NLScheduler(jarvis)
+    job = await sched.add("tagged", "every morning", "do stuff", tags=["daily", "report"])
+    assert "daily" in job.tags
+    assert "report" in job.tags
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_add_stores_priority():
+    from jarvis.scheduling import NLScheduler, Priority
+    jarvis = MagicMock()
+    jarvis.memory.add_scheduled_task = MagicMock()
+    sched = NLScheduler(jarvis)
+    job = await sched.add("high_prio", "every morning", "do it", priority=Priority.HIGH)
+    assert job.priority == Priority.HIGH
+
+
+# ── NLScheduler.run_now increments run_count ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_now_increments_run_count():
+    from jarvis.scheduling import NLScheduler
+    from unittest.mock import AsyncMock as AM
+    jarvis = MagicMock()
+    jarvis.memory.add_scheduled_task = MagicMock()
+    jarvis.chat = AM(return_value="done")
+    sched = NLScheduler(jarvis)
+    job = await sched.add("counter_job", "every morning", "tick")
+    await sched.run_now(job.id)
+    await sched.run_now(job.id)
+    assert job.run_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_now_sets_last_status_success():
+    from jarvis.scheduling import NLScheduler
+    from unittest.mock import AsyncMock as AM
+    jarvis = MagicMock()
+    jarvis.memory.add_scheduled_task = MagicMock()
+    jarvis.chat = AM(return_value="ok")
+    sched = NLScheduler(jarvis)
+    job = await sched.add("status_job", "* * * * *", "hi")
+    await sched.run_now(job.id)
+    assert job.last_status == "success"
