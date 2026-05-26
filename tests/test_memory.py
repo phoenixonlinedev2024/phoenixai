@@ -745,3 +745,68 @@ def test_store_lesson_content_retrievable(memory_store):
     memory_store.store_lesson("Always check edge cases", context="unit test session")
     lessons = memory_store.get_lessons(limit=5)
     assert "Always check edge cases" in lessons
+
+
+# ── recall_fact returns None for missing key ──────────────────────────────────
+
+def test_recall_fact_missing_key_returns_none(memory_store):
+    result = memory_store.recall_fact("no_such_key_xyz")
+    assert result is None
+
+
+def test_recall_fact_returns_stored_value(memory_store):
+    memory_store.store_fact("favorite_color", "blue")
+    assert memory_store.recall_fact("favorite_color") == "blue"
+
+
+# ── update_monitor_hash changes the hash ─────────────────────────────────────
+
+def test_update_monitor_hash(memory_store):
+    memory_store.add_monitor_target("hash_target", "url", "https://x.com", "alert")
+    memory_store.update_monitor_hash("hash_target", "abc123")
+    targets = memory_store.get_monitor_targets()
+    t = next((t for t in targets if t["name"] == "hash_target"), None)
+    assert t is not None
+    assert t["last_hash"] == "abc123"
+
+
+# ── get_lessons respects limit ────────────────────────────────────────────────
+
+def test_get_lessons_respects_limit(memory_store):
+    for i in range(10):
+        memory_store.store_lesson(f"lesson_{i}")
+    lessons = memory_store.get_lessons(limit=3)
+    assert len(lessons) <= 3
+
+
+# ── all_facts returns all stored facts ───────────────────────────────────────
+
+def test_all_facts_returns_all(memory_store):
+    memory_store.store_fact("k1", "v1")
+    memory_store.store_fact("k2", "v2")
+    facts = memory_store.all_facts()
+    keys = [f["key"] for f in facts]
+    assert "k1" in keys
+    assert "k2" in keys
+
+
+# ── store_fact updates existing key ──────────────────────────────────────────
+
+def test_store_fact_updates_existing_key(memory_store):
+    memory_store.store_fact("mutable_key", "first_value")
+    memory_store.store_fact("mutable_key", "second_value")
+    result = memory_store.recall_fact("mutable_key")
+    assert result == "second_value"
+
+
+# ── get_open_gaps returns only unresolved ────────────────────────────────────
+
+def test_get_open_gaps_only_unresolved(memory_store):
+    memory_store.log_gap("gap_a")
+    memory_store.log_gap("gap_b")
+    gaps = memory_store.get_open_gaps()
+    gap_b = next((g for g in gaps if g["description"] == "gap_b"), None)
+    assert gap_b is not None
+    memory_store.resolve_gap(gap_b["id"])
+    open_gaps = [g["description"] for g in memory_store.get_open_gaps()]
+    assert "gap_b" not in open_gaps
