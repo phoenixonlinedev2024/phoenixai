@@ -797,3 +797,92 @@ def test_build_registry_nlp_cron_and_sandbox_tools_registered():
     assert "nl_to_cron" in names
     assert "sandbox_run" in names
     assert "sandbox_run_code" in names
+
+
+def test_web_fetch_truncates_long_content():
+    """_web_fetch caps output at 8000 chars for very large pages."""
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.text = "<p>" + "x" * 9000 + "</p>"
+    fake_requests = MagicMock()
+    fake_requests.get = MagicMock(return_value=fake_resp)
+
+    class FakeSoup:
+        def __init__(self, text, parser): pass
+        def __call__(self, tags): return []
+        def get_text(self, separator="\n", strip=False): return "y" * 9000
+
+    fake_bs4 = MagicMock()
+    fake_bs4.BeautifulSoup = FakeSoup
+
+    with patch.dict(sys.modules, {"requests": fake_requests, "bs4": fake_bs4}):
+        out = _web_fetch("https://example.com/large")
+    assert len(out) == 8000
+
+
+def test_list_directory_lists_dirs_before_files(tmp_path):
+    """_list_directory sorts dirs before files (key=lambda: (is_file, name))."""
+    (tmp_path / "a_file.txt").write_text("x")
+    (tmp_path / "b_subdir").mkdir()
+    out = _list_directory(str(tmp_path))
+    lines = out.splitlines()
+    # Directory should appear before file in the output
+    dir_pos = next(i for i, l in enumerate(lines) if "[DIR]" in l)
+    file_pos = next(i for i, l in enumerate(lines) if "[FILE]" in l)
+    assert dir_pos < file_pos
+
+
+def test_run_shell_no_output_shows_exit_code():
+    """_run_shell with no stdout/stderr still returns the exit code line."""
+    out = _run_shell("true")  # no output, exit 0
+    assert "Exit code:" in out
+    assert "0" in out
+
+
+def test_run_shell_exception_returns_error():
+    """_run_shell exception (e.g. FileNotFoundError) returns 'Shell error:'."""
+    import subprocess
+    with patch("subprocess.run", side_effect=OSError("bad cmd")):
+        out = _run_shell("nonexistent_binary")
+    assert "Shell error" in out
+
+
+def test_execute_python_stderr_included():
+    """_execute_python captures stderr from the executed code."""
+    out = _execute_python("import sys; print('err', file=sys.stderr)")
+    assert "err" in out
+
+
+def test_write_and_run_code_typescript_no_runner():
+    """TypeScript maps to .ts but has no runner — returns 'No runner configured'."""
+    out = _write_and_run_code("typescript", "const x: number = 1;")
+    assert "No runner" in out
+
+
+def test_web_search_returns_error_on_exception():
+    """_web_search returns an error string when DDGS raises."""
+    fake_ddgs_instance = MagicMock()
+    fake_ddgs_instance.__enter__ = MagicMock(side_effect=RuntimeError("ddgs down"))
+    fake_ddgs_instance.__exit__ = MagicMock(return_value=False)
+    fake_module = MagicMock()
+    fake_module.DDGS = MagicMock(return_value=fake_ddgs_instance)
+    with patch.dict(sys.modules, {"duckduckgo_search": fake_module}):
+        out = _web_search("test query")
+    assert "Search error" in out
+
+
+def test_read_file_not_found_returns_error():
+    """_read_file on a nonexistent path returns a 'Read error:' string."""
+    out = _read_file("/nonexistent/path/file_xyz.txt")
+    assert "Read error" in out
+
+
+def test_api_call_json_parse_error_returns_text_response():
+    """When response is not JSON, _api_call returns resp.text."""
+    with patch("requests.request") as mock_req:
+        resp = MagicMock()
+        resp.json.side_effect = ValueError("not json")
+        resp.text = "plain text response"
+        mock_req.return_value = resp
+        out = _api_call("https://example.com")
+    assert "plain text response" in out
