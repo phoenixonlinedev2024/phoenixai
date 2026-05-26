@@ -192,3 +192,60 @@ def test_get_system_prompt_gap_context_section_label():
 
 def test_jarvis_system_prompt_is_default():
     assert JARVIS_SYSTEM_PROMPT == PERSONALITY_PROFILES["default"]
+
+
+# ── Additional personality constant tests ─────────────────────────────────────
+
+def test_personality_profiles_is_dict():
+    assert isinstance(PERSONALITY_PROFILES, dict)
+
+
+def test_personality_profiles_count_is_five():
+    assert len(PERSONALITY_PROFILES) == 5
+
+
+def test_all_profile_keys_are_lowercase():
+    for key in PERSONALITY_PROFILES:
+        assert key == key.lower(), f"Profile key '{key}' is not lowercase"
+
+
+def test_capability_created_template_has_name_placeholder():
+    assert "{name}" in JARVIS_CAPABILITY_CREATED_TEMPLATE
+
+
+def test_learning_template_has_count_placeholder():
+    assert "{count}" in JARVIS_LEARNING_TEMPLATE
+
+
+def test_capability_created_template_is_string():
+    assert isinstance(JARVIS_CAPABILITY_CREATED_TEMPLATE, str)
+    assert len(JARVIS_CAPABILITY_CREATED_TEMPLATE) > 10
+
+
+def test_jarvis_wake_responses_all_non_empty():
+    for response in JARVIS_WAKE_RESPONSES:
+        assert len(response) > 0, "Wake response should not be empty"
+
+
+def test_jarvis_wake_responses_at_least_three():
+    assert len(JARVIS_WAKE_RESPONSES) >= 3
+
+
+def test_jarvis_voice_intro_contains_jarvis():
+    assert "JARVIS" in JARVIS_VOICE_INTRO
+
+
+def test_get_system_prompt_no_duplicate_newlines_at_start():
+    prompt = get_system_prompt()
+    assert not prompt.startswith("\n\n")
+
+
+def test_get_system_prompt_gap_and_memory_both_included():
+    prompt = get_system_prompt(
+        memory_context="user is an engineer",
+        gap_context="no OCR tool",
+    )
+    assert "engineer" in prompt
+    assert "OCR tool" in prompt
+    assert "Your Current Memory" in prompt
+    assert "Capability Gaps" in prompt
