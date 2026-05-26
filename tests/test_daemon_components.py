@@ -345,3 +345,70 @@ def test_voice_loop_stop_when_no_stt_does_not_raise():
     vl = VoiceLoop(jarvis)
     vl._stt = None
     vl.stop()  # should not raise
+
+
+# ── JarvisScheduler.stop calls shutdown ──────────────────────────────────────
+
+def test_scheduler_stop_calls_shutdown():
+    jarvis = _make_jarvis()
+    sched = JarvisScheduler(jarvis)
+    sched.stop()
+    sched.scheduler.shutdown.assert_called_once_with(wait=False)
+
+
+# ── JarvisScheduler._load_tasks skips tasks with bad cron ────────────────────
+
+def test_scheduler_load_tasks_bad_cron_prints_error(monkeypatch, capsys):
+    monkeypatch.setattr("jarvis.daemon.CronTrigger", MagicMock(
+        **{"from_crontab.side_effect": ValueError("bad cron")}
+    ))
+    jarvis = _make_jarvis(scheduled_tasks=[
+        {"name": "bad_task", "cron": "not a cron", "prompt": "do stuff"},
+    ])
+    sched = JarvisScheduler(jarvis)
+    sched._load_tasks()
+    out = capsys.readouterr().out
+    assert "Failed" in out or "bad_task" in out
+
+
+# ── JarvisScheduler._run_task exception path ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_scheduler_run_task_exception_prints_error(capsys):
+    jarvis = _make_jarvis()
+    jarvis.chat = AsyncMock(side_effect=RuntimeError("chat down"))
+    sched = JarvisScheduler(jarvis)
+    await sched._run_task("failing_task", "please work")
+    out = capsys.readouterr().out
+    assert "failing_task" in out
+    assert "error" in out.lower() or "Error" in out
+
+
+# ── VoiceLoop attributes are correct type ────────────────────────────────────
+
+def test_voice_loop_jarvis_is_stored_jarvis():
+    jarvis = _make_jarvis()
+    vl = VoiceLoop(jarvis)
+    assert vl.jarvis is jarvis
+
+
+def test_voice_loop_attributes_start_as_none():
+    jarvis = _make_jarvis()
+    vl = VoiceLoop(jarvis)
+    assert vl._tts is None
+    assert vl._stt is None
+
+
+# ── JarvisScheduler._run_reflection with non-empty result ───────────────────
+
+@pytest.mark.asyncio
+async def test_scheduler_run_reflection_counts_lessons(capsys):
+    jarvis = _make_jarvis()
+    jarvis.learner.reflect = AsyncMock(return_value={
+        "lessons": ["lesson_a", "lesson_b"],
+        "facts": {},
+    })
+    sched = JarvisScheduler(jarvis)
+    await sched._run_reflection()
+    out = capsys.readouterr().out
+    assert "2" in out
