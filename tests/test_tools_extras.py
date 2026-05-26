@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -376,3 +376,121 @@ def test_get_system_prompt_both_memory_and_gap_context():
     assert "can't parse PDFs" in prompt
     assert "Your Current Memory" in prompt
     assert "Capability Gaps" in prompt
+
+
+# ── geo_weather_tools ─────────────────────────────────────────────────────────
+
+from jarvis.tools.geo_weather_tools import (  # noqa: E402
+    _geocode, _get_weather, _read_rss, _ocr_image, _log_analyse,
+)
+
+
+def test_geocode_no_results():
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.json.return_value = []
+        out = _geocode("nowhere special")
+    assert "No results" in out
+
+
+def test_geocode_returns_lat_lon():
+    result = [{"display_name": "London, UK", "lat": "51.5", "lon": "-0.1"}]
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.json.return_value = result
+        out = _geocode("London")
+    assert "lat:51.5" in out
+    assert "lon:-0.1" in out
+
+
+def test_geocode_exception_returns_error():
+    with patch("requests.get", side_effect=Exception("network down")):
+        out = _geocode("anywhere")
+    assert "Geocode error" in out
+
+
+def test_get_weather_location_not_found():
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.json.return_value = []
+        out = _get_weather("UnknownCity")
+    assert "Location not found" in out
+
+
+def test_get_weather_returns_lines():
+    geo = [{"display_name": "Paris, France", "lat": "48.8", "lon": "2.3"}]
+    daily = {
+        "time": ["2026-05-26"],
+        "temperature_2m_max": [22.0],
+        "temperature_2m_min": [14.0],
+        "precipitation_sum": [0.5],
+    }
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.json.side_effect = [geo, {"daily": daily}]
+        out = _get_weather("Paris", days=1)
+    assert "Paris, France" in out
+    assert "2026-05-26" in out
+
+
+def test_get_weather_exception_returns_error():
+    with patch("requests.get", side_effect=Exception("timeout")):
+        out = _get_weather("Paris")
+    assert "Weather error" in out
+
+
+def test_read_rss_no_feedparser_fallback(tmp_path):
+    xml = (
+        "<rss><channel>"
+        "<item><title>Hello</title><link>http://x.com</link></item>"
+        "</channel></rss>"
+    )
+    fake_resp = MagicMock()
+    fake_resp.text = xml
+    with patch.dict(sys.modules, {"feedparser": None}):
+        with patch("requests.get", return_value=fake_resp):
+            out = _read_rss("http://example.com/feed")
+    assert "Hello" in out
+
+
+def test_read_rss_feedparser_present():
+    fake_entry = MagicMock()
+    fake_entry.get = lambda k, d="": {"title": "Item1", "link": "http://x", "summary": "desc"}.get(k, d)
+    fake_feed = MagicMock()
+    fake_feed.entries = [fake_entry]
+    fake_fp = MagicMock()
+    fake_fp.parse.return_value = fake_feed
+    with patch.dict(sys.modules, {"feedparser": fake_fp}):
+        out = _read_rss("http://example.com/rss")
+    assert "Item1" in out
+
+
+def test_ocr_image_no_pytesseract():
+    with patch.dict(sys.modules, {"pytesseract": None}):
+        out = _ocr_image("/tmp/fake.png")
+    assert "not installed" in out.lower() or "pytesseract" in out
+
+
+def test_log_analyse_tail_and_count(tmp_path):
+    log = tmp_path / "app.log"
+    log.write_text("INFO line\nERROR boom\nDEBUG ok\n")
+    out = _log_analyse(str(log))
+    assert "Total lines:" in out
+    assert "Errors:" in out
+
+
+def test_log_analyse_pattern_filter(tmp_path):
+    log = tmp_path / "app.log"
+    log.write_text("INFO foo\nERROR bar\nINFO baz\n")
+    out = _log_analyse(str(log), pattern="ERROR")
+    assert "ERROR" in out
+
+
+def test_log_analyse_missing_file():
+    out = _log_analyse("/nonexistent/file.log")
+    assert "Log error" in out
+
+
+def test_geo_weather_register_tools_populates_registry():
+    from jarvis.tools.registry import build_registry
+    from jarvis.tools.geo_weather_tools import register_tools
+    reg = build_registry()
+    register_tools(reg)
+    for name in ("geocode", "get_weather", "read_rss", "ocr_image", "analyse_logs"):
+        assert reg.get(name) is not None
