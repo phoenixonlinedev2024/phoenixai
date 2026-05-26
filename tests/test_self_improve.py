@@ -1,9 +1,11 @@
 """Tests for jarvis.self_improve — benchmarks, gap synthesis, trend tracking."""
 
+import asyncio
 import json
 import pytest
 from pathlib import Path
-from jarvis.self_improve import BenchmarkCase, BenchmarkResult, BenchmarkRunner, CapabilityEvolver
+from unittest.mock import AsyncMock, MagicMock, patch
+from jarvis.self_improve import BenchmarkCase, BenchmarkResult, BenchmarkRunner, CapabilityEvolver, SelfImproveEngine
 
 
 # ── BenchmarkCase / Result ───────────────────────────────────────────────────
@@ -211,3 +213,152 @@ def test_benchmark_case_has_correct_id(mock_jarvis):
     assert case.id == "my_id"
     assert case.prompt == "prompt"
     assert "keyword" in case.expected_keywords
+
+
+# ── BenchmarkResult error field ───────────────────────────────────────────────
+
+def test_result_to_dict_includes_error_field():
+    r = BenchmarkResult("case1", False, 0.0, 1.2, "", error="timeout")
+    d = r.to_dict()
+    assert d["error"] == "timeout"
+
+
+def test_result_to_dict_error_none_by_default():
+    r = BenchmarkResult("case2", True, 1.0, 0.3, "ok")
+    d = r.to_dict()
+    assert d["error"] is None
+
+
+# ── run_case timeout / exception paths ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_case_timeout_sets_error(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    class TimeoutJarvis:
+        async def chat(self, prompt):
+            raise asyncio.TimeoutError()
+
+    runner = BenchmarkRunner(TimeoutJarvis())
+    case = BenchmarkCase("t", "prompt", ["keyword"], timeout=0.001)
+    result = await runner.run_case(case)
+    assert result.passed is False
+    assert result.error == "timeout"
+    assert result.score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_run_case_exception_sets_error(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    class ErrorJarvis:
+        async def chat(self, prompt):
+            raise RuntimeError("api exploded")
+
+    runner = BenchmarkRunner(ErrorJarvis())
+    case = BenchmarkCase("err", "prompt", ["keyword"])
+    result = await runner.run_case(case)
+    assert result.passed is False
+    assert "api exploded" in result.error
+    assert result.score == 0.0
+
+
+# ── load_history ──────────────────────────────────────────────────────────────
+
+def test_load_history_empty_when_no_file(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    runner = BenchmarkRunner(mock_jarvis)
+    assert runner.load_history() == []
+
+
+@pytest.mark.asyncio
+async def test_load_history_returns_entries(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    runner = BenchmarkRunner(mock_jarvis)
+    await runner.run_suite()
+    await runner.run_suite()
+    history = runner.load_history()
+    assert len(history) == 2
+    assert "pass_rate" in history[0]
+
+
+@pytest.mark.asyncio
+async def test_load_history_respects_limit(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    runner = BenchmarkRunner(mock_jarvis)
+    for _ in range(5):
+        await runner.run_suite()
+    history = runner.load_history(limit=3)
+    assert len(history) == 3
+
+
+# ── trend fields ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_trend_improving_field(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    runner = BenchmarkRunner(mock_jarvis)
+    await runner.run_suite()
+    await runner.run_suite()
+    t = runner.trend()
+    assert "improving" in t
+    assert "delta" in t
+    assert "latest_pass_rate" in t
+    assert "first_pass_rate" in t
+
+
+# ── SelfImproveEngine ────────────────────────────────────────────────────────
+
+def test_self_improve_engine_stores_components(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    engine = SelfImproveEngine(mock_jarvis)
+    assert isinstance(engine.benchmarks, BenchmarkRunner)
+    assert isinstance(engine.evolver, CapabilityEvolver)
+    assert engine.jarvis is mock_jarvis
+
+
+@pytest.mark.asyncio
+async def test_self_improve_engine_run_cycle_structure(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    engine = SelfImproveEngine(mock_jarvis)
+    result = await engine.run_cycle()
+    assert "benchmark" in result
+    assert "gaps_filled" in result
+    assert "capability" in result
+    assert "timestamp" in result
+
+
+# ── CapabilityEvolver.auto_fill_gaps ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_auto_fill_gaps_empty_when_no_gaps(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    class FakeMemory:
+        def get_open_gaps(self):
+            return []
+
+    class FakeRegistry:
+        def all(self):
+            return []
+
+    class FakeJarvis:
+        memory = FakeMemory()
+        registry = FakeRegistry()
+        client = MagicMock()
+
+        async def chat(self, prompt):
+            return "resp"
+
+    evolver = CapabilityEvolver(FakeJarvis())
+    filled = await evolver.auto_fill_gaps()
+    assert filled == []

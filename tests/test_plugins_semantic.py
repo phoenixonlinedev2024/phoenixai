@@ -257,3 +257,112 @@ def test_recall_silently_handles_error():
     sm._collection = col
     results = sm.recall("query")
     assert results == []
+
+
+# ── SemanticMemory additional coverage ───────────────────────────────────────
+
+def test_semantic_memory_initial_state():
+    sm = SemanticMemory()
+    assert sm._client is None
+    assert sm._collection is None
+
+
+def test_store_lesson_sets_type_metadata():
+    sm = SemanticMemory()
+    col = MagicMock()
+    sm._collection = col
+    sm.store_lesson("always validate inputs")
+    meta = col.upsert.call_args.kwargs["metadatas"][0]
+    assert meta["type"] == "lesson"
+
+
+def test_store_fact_text_format():
+    sm = SemanticMemory()
+    col = MagicMock()
+    sm._collection = col
+    sm.store_fact("language", "Python")
+    doc = col.upsert.call_args.kwargs["documents"][0]
+    assert "language" in doc
+    assert "Python" in doc
+
+
+def test_recall_with_where_filter_passes_kwarg():
+    sm = SemanticMemory()
+    col = MagicMock()
+    col.count = MagicMock(return_value=3)
+    col.query = MagicMock(return_value={
+        "documents": [["result"]],
+        "metadatas": [[{"type": "fact"}]],
+        "distances": [[0.1]],
+    })
+    sm._collection = col
+    results = sm.recall("query", where={"type": "fact"})
+    call_kwargs = col.query.call_args.kwargs
+    assert "where" in call_kwargs
+    assert call_kwargs["where"] == {"type": "fact"}
+    assert len(results) == 1
+
+
+def test_recall_relevant_includes_similarity():
+    sm = SemanticMemory()
+    col = MagicMock()
+    col.count = MagicMock(return_value=1)
+    col.query = MagicMock(return_value={
+        "documents": [["Python tip"]],
+        "metadatas": [[{"type": "lesson"}]],
+        "distances": [[0.05]],
+    })
+    sm._collection = col
+    out = sm.recall_relevant("python")
+    assert "similarity" in out
+    assert "Python tip" in out
+
+
+def test_store_conversation_snippet_text_stored():
+    sm = SemanticMemory()
+    col = MagicMock()
+    sm._collection = col
+    sm.store_conversation_snippet("the user asked about JARVIS", session_id="s42")
+    doc = col.upsert.call_args.kwargs["documents"][0]
+    assert "JARVIS" in doc
+
+
+# ── PluginLoader additional coverage ─────────────────────────────────────────
+
+def test_hot_reload_start_sets_running_flag(tmp_path):
+    import jarvis.plugins.loader as loader_mod
+    original = loader_mod.PLUGINS_DIR
+    loader_mod.PLUGINS_DIR = tmp_path
+
+    registry = MagicMock()
+    loader = PluginLoader(registry)
+    loader.start_hot_reload(interval=9999)
+    assert loader._running is True
+    loader.stop_hot_reload()
+    loader_mod.PLUGINS_DIR = original
+
+
+def test_hot_reload_start_prints_message(tmp_path, capsys):
+    import jarvis.plugins.loader as loader_mod
+    original = loader_mod.PLUGINS_DIR
+    loader_mod.PLUGINS_DIR = tmp_path
+
+    registry = MagicMock()
+    loader = PluginLoader(registry)
+    loader.start_hot_reload(interval=9999)
+    loader.stop_hot_reload()
+    loader_mod.PLUGINS_DIR = original
+
+    out = capsys.readouterr().out
+    assert "Hot reload" in out or "polling" in out
+
+
+def test_load_plugin_success_prints_loaded(tmp_path, capsys):
+    plugin = tmp_path / "myplugin.py"
+    plugin.write_text("def register_tools(registry):\n    pass\n")
+    registry = MagicMock()
+    loader = PluginLoader(registry)
+    result = loader._load_plugin(plugin)
+    assert result is True
+    out = capsys.readouterr().out
+    assert "myplugin" in out

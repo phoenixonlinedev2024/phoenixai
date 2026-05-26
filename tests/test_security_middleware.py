@@ -245,3 +245,101 @@ def test_keystore_persistence_includes_calls(tmp_path):
     ks2 = KeyStore(path=path)
     key = ks2.validate(raw)
     assert key.calls == 3  # 2 from ks1, +1 from the reload validate
+
+
+# ── KeyStore revoke / list_keys ───────────────────────────────────────────────
+
+def test_keystore_revoke_removes_key(tmp_path):
+    ks = KeyStore(path=tmp_path / "keys.json")
+    raw = ks.generate(role="user", name="temp")
+    assert ks.validate(raw) is not None
+    result = ks.revoke(raw)
+    assert result is True
+    assert ks.validate(raw) is None
+
+
+def test_keystore_revoke_unknown_key_returns_false(tmp_path):
+    ks = KeyStore(path=tmp_path / "keys.json")
+    assert ks.revoke("jvs_nonexistent_key_xyz") is False
+
+
+def test_keystore_list_keys_returns_dicts(tmp_path):
+    ks = KeyStore(path=tmp_path / "keys.json")
+    ks.generate(role="user", name="alice")
+    ks.generate(role="admin", name="bob")
+    keys = ks.list_keys()
+    assert len(keys) == 2
+    for k in keys:
+        assert "role" in k
+        assert "key_prefix" in k
+
+
+def test_keystore_list_keys_empty(tmp_path):
+    ks = KeyStore(path=tmp_path / "keys.json")
+    assert ks.list_keys() == []
+
+
+# ── ApiKey.to_dict ────────────────────────────────────────────────────────────
+
+def test_api_key_to_dict_has_prefix(tmp_path):
+    from jarvis.security import ApiKey
+    key = ApiKey(key="jvs_abcdefghijklmnop", role="admin", name="test")
+    d = key.to_dict()
+    assert d["key_prefix"].endswith("...")
+    assert d["role"] == "admin"
+    assert d["name"] == "test"
+
+
+def test_api_key_default_role_is_user():
+    from jarvis.security import ApiKey
+    key = ApiKey(key="jvs_xxx")
+    assert key.role == "user"
+    assert key.calls == 0
+    assert key.last_used is None
+
+
+# ── sign_payload / verify_signature ──────────────────────────────────────────
+
+def test_sign_and_verify_payload():
+    from jarvis.security import sign_payload, verify_signature
+    sig = sign_payload("hello world", "mysecret")
+    assert verify_signature("hello world", sig, "mysecret") is True
+
+
+def test_verify_signature_wrong_secret():
+    from jarvis.security import sign_payload, verify_signature
+    sig = sign_payload("data", "correct_secret")
+    assert verify_signature("data", sig, "wrong_secret") is False
+
+
+def test_verify_signature_tampered_payload():
+    from jarvis.security import sign_payload, verify_signature
+    sig = sign_payload("original", "secret")
+    assert verify_signature("tampered", sig, "secret") is False
+
+
+# ── WebSocket path passthrough ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_ws_path_bypasses_auth(middleware, app_mock, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "SECURITY_ENABLED", True)
+    scope = {"type": "http", "path": "/ws/chat", "headers": []}
+    await middleware(scope, None, None)
+    app_mock.assert_awaited_once()
+
+
+# ── RateLimiter.is_allowed repeated calls ─────────────────────────────────────
+
+def test_rate_limiter_depletes_then_blocks():
+    rl = RateLimiter(limit=2, window=60)
+    assert rl.is_allowed("client") is True
+    assert rl.is_allowed("client") is True
+    assert rl.is_allowed("client") is False
+
+
+def test_rate_limiter_remaining_decreases():
+    rl = RateLimiter(limit=5, window=60)
+    assert rl.remaining("c") == 5
+    rl.is_allowed("c")
+    assert rl.remaining("c") == 4
