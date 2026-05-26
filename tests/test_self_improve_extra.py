@@ -594,3 +594,103 @@ def test_benchmark_result_to_dict_latency_rounded():
     r = BenchmarkResult("c", True, 1.0, 1.23456, "resp")
     d = r.to_dict()
     assert d["latency_s"] == 1.235
+
+
+# ── CapabilityEvolver.auto_fill_gaps with gaps ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_auto_fill_gaps_fills_one_gap(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.DATA_DIR", tmp_path)
+    jarvis = MagicMock()
+    jarvis.memory.get_open_gaps.return_value = [{"id": 1, "description": "need csv parser"}]
+    fake_tool = MagicMock()
+    fake_tool.name = "csv_parser"
+    jarvis.client = AsyncMock()
+    jarvis.registry = MagicMock()
+
+    with patch("jarvis.tools.creator.synthesise_tool", AsyncMock(return_value=fake_tool)):
+        evolver = CapabilityEvolver(jarvis)
+        filled = await evolver.auto_fill_gaps()
+
+    assert "csv_parser" in filled
+    jarvis.memory.resolve_gap.assert_called_once_with(1)
+
+
+@pytest.mark.asyncio
+async def test_auto_fill_gaps_synthesis_exception_continues(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.DATA_DIR", tmp_path)
+    jarvis = MagicMock()
+    jarvis.memory.get_open_gaps.return_value = [{"id": 2, "description": "failing gap"}]
+    jarvis.client = AsyncMock()
+    jarvis.registry = MagicMock()
+
+    with patch("jarvis.tools.creator.synthesise_tool", AsyncMock(side_effect=RuntimeError("boom"))):
+        evolver = CapabilityEvolver(jarvis)
+        filled = await evolver.auto_fill_gaps()
+
+    assert filled == []
+
+
+# ── CapabilityEvolver.capability_report ───────────────────────────────────────
+
+def test_capability_report_has_all_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.DATA_DIR", tmp_path)
+    jarvis = MagicMock()
+    jarvis.memory.get_open_gaps.return_value = []
+    jarvis.registry.all.return_value = []
+    evolver = CapabilityEvolver(jarvis)
+    report = evolver.capability_report()
+    for key in ("total_tools", "dynamic_tools", "open_gaps", "gap_descriptions"):
+        assert key in report
+
+
+def test_capability_report_gap_descriptions_truncated_to_10(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.DATA_DIR", tmp_path)
+    jarvis = MagicMock()
+    jarvis.memory.get_open_gaps.return_value = [{"id": i, "description": f"gap{i}"} for i in range(15)]
+    jarvis.registry.all.return_value = []
+    evolver = CapabilityEvolver(jarvis)
+    report = evolver.capability_report()
+    assert len(report["gap_descriptions"]) <= 10
+
+
+# ── SelfImproveEngine.run_cycle response keys ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_cycle_has_all_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.DATA_DIR", tmp_path)
+    jarvis = MagicMock()
+    jarvis.chat = AsyncMock(return_value="ok answer with hello world")
+    jarvis.memory.get_open_gaps.return_value = []
+    jarvis.registry.all.return_value = []
+    engine = SelfImproveEngine(jarvis)
+    result = await engine.run_cycle()
+    for key in ("benchmark", "gaps_filled", "capability", "timestamp"):
+        assert key in result
+
+
+# ── BenchmarkRunner.run_suite summary keys ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_suite_summary_has_failed_key(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.DATA_DIR", tmp_path)
+    jarvis = MagicMock()
+    jarvis.chat = AsyncMock(return_value="hello world")
+    case = BenchmarkCase(id="t1", prompt="say hi", expected_keywords=["hello"])
+    runner = BenchmarkRunner(jarvis)
+    result = await runner.run_suite([case])
+    assert "failed" in result
+    assert result["failed"] == result["total"] - result["passed"]
+
+
+@pytest.mark.asyncio
+async def test_run_suite_appends_to_history(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.config.cfg.DATA_DIR", tmp_path)
+    jarvis = MagicMock()
+    jarvis.chat = AsyncMock(return_value="pong")
+    case = BenchmarkCase(id="ping", prompt="ping", expected_keywords=["pong"])
+    runner = BenchmarkRunner(jarvis)
+    await runner.run_suite([case])
+    await runner.run_suite([case])
+    history = runner.load_history()
+    assert len(history) == 2
