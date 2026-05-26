@@ -1052,3 +1052,80 @@ def test_list_directory_nonexistent_path_returns_error():
     from jarvis.tools.registry import _list_directory
     out = _list_directory("/nonexistent/path/that/does/not/exist/xyz")
     assert "List error" in out or "error" in out.lower()
+
+
+# ── _get_system_info error path ───────────────────────────────────────────────
+
+def test_get_system_info_error_returns_system_info_error():
+    with patch.dict(sys.modules, {"psutil": None}):
+        out = _get_system_info()
+    assert "System info error" in out or "error" in out.lower()
+
+
+def test_get_system_info_with_psutil_returns_cpu():
+    fake_psutil = MagicMock()
+    fake_psutil.cpu_percent.return_value = 42.0
+    mem = MagicMock()
+    mem.percent = 55.0
+    mem.used = 2 * 1024**2
+    mem.total = 8 * 1024**2
+    fake_psutil.virtual_memory.return_value = mem
+    disk = MagicMock()
+    disk.percent = 30.0
+    disk.used = 50 * 1024**3
+    disk.total = 200 * 1024**3
+    fake_psutil.disk_usage.return_value = disk
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        out = _get_system_info()
+    assert "CPU:" in out
+    assert "Memory:" in out
+    assert "Disk:" in out
+
+
+# ── _api_call: successful JSON vs text response ───────────────────────────────
+
+def test_api_call_returns_json_string():
+    fake_resp = MagicMock()
+    fake_resp.headers = {"Content-Type": "application/json"}
+    fake_resp.json.return_value = {"status": "ok"}
+    with patch("requests.request", return_value=fake_resp):
+        out = _api_call("https://api.example.com/status")
+    assert "status" in out
+
+
+def test_api_call_returns_text_when_not_json():
+    fake_resp = MagicMock()
+    fake_resp.headers = {"Content-Type": "text/plain"}
+    fake_resp.text = "pong"
+    with patch("requests.request", return_value=fake_resp):
+        out = _api_call("https://api.example.com/ping")
+    assert "pong" in out
+
+
+# ── _write_file creates file with correct content ─────────────────────────────
+
+def test_write_file_creates_file(tmp_path):
+    from jarvis.tools.registry import _write_file
+    p = str(tmp_path / "out.txt")
+    out = _write_file(p, "hello world")
+    assert "Written" in out or "Wrote" in out
+    assert (tmp_path / "out.txt").read_text() == "hello world"
+
+
+# ── _read_file reads file content ─────────────────────────────────────────────
+
+def test_read_file_returns_content(tmp_path):
+    f = tmp_path / "data.txt"
+    f.write_text("sample content")
+    out = _read_file(str(f))
+    assert "sample content" in out
+
+
+# ── _list_directory returns file names ────────────────────────────────────────
+
+def test_list_directory_returns_file_names(tmp_path):
+    (tmp_path / "alpha.txt").write_text("a")
+    (tmp_path / "beta.txt").write_text("b")
+    out = _list_directory(str(tmp_path))
+    assert "alpha.txt" in out
+    assert "beta.txt" in out
