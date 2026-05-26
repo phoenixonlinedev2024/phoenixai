@@ -424,3 +424,87 @@ def test_skill_tags_are_searchable(registry):
     registry.register(Skill("tagged_skill", "some desc", "some prompt", tags=["mlops", "ai"]))
     results = registry.search("mlops")
     assert any(s.name == "tagged_skill" for s in results)
+
+
+# ── Skill.to_dict / from_dict round-trip ──────────────────────────────────────
+
+def test_skill_to_dict_contains_all_keys():
+    s = Skill("x", "desc", "prompt", tags=["a"], usage_count=3, created_by="user")
+    d = s.to_dict()
+    for k in ("name", "description", "system_prompt", "tags", "usage_count", "created_by"):
+        assert k in d
+
+
+def test_skill_from_dict_round_trips():
+    s = Skill("rnd", "round trip", "prompt_rnd", tags=["t1"], usage_count=5)
+    d = s.to_dict()
+    s2 = Skill.from_dict(d)
+    assert s2.name == s.name
+    assert s2.usage_count == s.usage_count
+    assert s2.tags == s.tags
+
+
+def test_skill_from_dict_created_by_user():
+    s = Skill.from_dict({"name": "u", "description": "d", "system_prompt": "p",
+                         "tags": [], "usage_count": 0, "created_by": "user"})
+    assert s.created_by == "user"
+
+
+# ── SkillRegistry.top() ──────────────────────────────────────────────────────
+
+def test_top_returns_n_most_used(registry):
+    for i, name in enumerate(("a", "b", "c", "d")):
+        s = Skill(name, "d", "p", usage_count=i)
+        registry._skills[name] = s
+    top = registry.top(2)
+    assert len(top) == 2
+    assert top[0].usage_count >= top[1].usage_count
+
+
+def test_top_empty_registry_returns_empty(registry):
+    assert registry.top(5) == []
+
+
+def test_top_n_larger_than_registry_returns_all(registry):
+    registry.register(Skill("only_one", "d", "p"))
+    top = registry.top(100)
+    assert len(top) == 1
+
+
+# ── SkillRegistry.summary() format ───────────────────────────────────────────
+
+def test_summary_format_contains_skills_word(registry):
+    assert "skills" in registry.summary()
+
+
+def test_summary_generated_after_auto_created_skill(registry):
+    registry._skills["gen"] = Skill("gen", "d", "p", created_by="generated")
+    assert "1 auto-generated" in registry.summary()
+
+
+# ── SkillRegistry.auto_create success path ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_auto_create_success(registry):
+    client = AsyncMock()
+    client.messages.create.return_value.content[0].text = json.dumps({
+        "name": "new_skill",
+        "description": "does something",
+        "tags": ["ai"],
+        "system_prompt": "Be excellent.",
+    })
+    skill = await registry.auto_create("something new", client)
+    assert skill is not None
+    assert skill.name == "new_skill"
+    assert skill.created_by == "generated"
+    assert registry.get("new_skill") is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_create_api_error_returns_none(registry, capsys):
+    client = AsyncMock()
+    client.messages.create.side_effect = RuntimeError("api down")
+    skill = await registry.auto_create("failing task", client)
+    assert skill is None
+    out = capsys.readouterr().out
+    assert "Auto-create failed" in out
