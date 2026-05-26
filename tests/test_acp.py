@@ -553,3 +553,77 @@ def test_stats_subscribers_dict_has_correct_counts(bus):
     bus.subscribe("ch", h2)
     stats = bus.stats()
     assert stats["subscribers"]["ch"] == 2
+
+
+# ── unsubscribe removes handler ───────────────────────────────────────────────
+
+def test_unsubscribe_removes_handler(bus):
+    received = []
+
+    async def h(msg):
+        received.append(msg.payload)
+
+    bus.subscribe("unsubscribe_test", h)
+    bus.unsubscribe("unsubscribe_test", h)
+    assert h not in bus._subs.get("unsubscribe_test", [])
+
+
+def test_unsubscribe_nonexistent_topic_is_safe(bus):
+    async def h(msg): pass
+    bus.unsubscribe("no_such_topic", h)
+
+
+# ── wildcard '*' subscription receives all messages ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_wildcard_subscription_receives_all_topics(bus):
+    received = []
+
+    async def catch_all(msg):
+        received.append(msg.topic)
+
+    bus.subscribe("*", catch_all)
+    try:
+        await bus.publish("topic_a", "x")
+        await bus.publish("topic_b", "y")
+    finally:
+        bus.unsubscribe("*", catch_all)
+
+    assert "topic_a" in received
+    assert "topic_b" in received
+
+
+# ── history with topic filter ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_history_topic_filter_returns_only_matching(bus):
+    await bus.publish("fruit", "apple")
+    await bus.publish("veggies", "carrot")
+    result = bus.history(topic="fruit")
+    assert all(m["topic"] == "fruit" for m in result)
+
+
+# ── ACPMessage id is short hex string ─────────────────────────────────────────
+
+def test_acp_message_id_is_8_char_hex():
+    from jarvis.acp import ACPMessage
+    msg = ACPMessage()
+    assert len(msg.id) == 8
+    assert all(c in "0123456789abcdef" for c in msg.id)
+
+
+# ── ACPMessage sender default is jarvis ──────────────────────────────────────
+
+def test_acp_message_sender_default():
+    from jarvis.acp import ACPMessage
+    msg = ACPMessage()
+    assert msg.sender == "jarvis"
+
+
+# ── publish with custom sender is stored ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_publish_custom_sender_stored_in_history(bus):
+    await bus.publish("agent_channel", "data", sender="subagent_1")
+    recent = bus.history(topic="agent_channel", limit=1)
+    assert recent[-1]["sender"] == "subagent_1"
