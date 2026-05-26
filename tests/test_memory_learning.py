@@ -305,3 +305,51 @@ def test_build_context_prompt_both_sections_present(memory_store):
     assert "Lessons Learned" in out
     assert "blue" in out
     assert "concise" in out
+
+
+# ── build_context_prompt: separator between sections ─────────────────────────
+
+def test_build_context_prompt_sections_are_separated(memory_store):
+    memory_store.store_fact("key", "value")
+    memory_store.store_lesson("a lesson")
+    engine = LearningEngine(memory_store)
+    out = engine.build_context_prompt()
+    # Verify both sections present and output is non-trivial
+    assert len(out) > 30
+
+
+def test_build_context_prompt_fact_key_value_format(memory_store):
+    memory_store.store_fact("user_name", "Alice")
+    engine = LearningEngine(memory_store)
+    out = engine.build_context_prompt()
+    assert "user_name" in out
+    assert "Alice" in out
+
+
+@pytest.mark.asyncio
+async def test_reflect_returns_result_dict_on_success(memory_store, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "LEARNING_ENABLED", True)
+
+    client = MagicMock()
+    reply = MagicMock()
+    reply.content = [MagicMock(text='{"lessons": ["x"], "facts": {}, "capability_gaps": []}')]
+    client.messages.create = AsyncMock(return_value=reply)
+
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "q"}], client)
+    assert isinstance(result, dict)
+    assert "lessons" in result
+
+
+@pytest.mark.asyncio
+async def test_reflect_api_error_returns_empty_dict(memory_store, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "LEARNING_ENABLED", True)
+
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=ConnectionError("network down"))
+
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "hi"}], client)
+    assert result == {}

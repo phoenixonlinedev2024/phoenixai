@@ -249,3 +249,35 @@ def test_mtime_not_reloaded_if_unchanged(loader, tmp_path, registry):
     # Call _load_plugin again without changing mtime
     loader._load_plugin(plugin)
     assert registry.count == 2  # _load_plugin always reloads when called directly
+
+
+# ── PluginLoader further edge cases ─────────────────────────────────────────
+
+def test_load_plugin_exception_prints_error(loader, tmp_path, capsys):
+    p = tmp_path / "crash.py"
+    p.write_text("raise RuntimeError('load crash')\n")
+    result = loader._load_plugin(p)
+    assert result is False
+    out = capsys.readouterr().out
+    assert "Failed" in out
+
+
+def test_load_all_skips_double_underscore_prefix(loader, tmp_path):
+    (tmp_path / "__init__.py").write_text("def register_tools(r): r.called = True\n")
+    count = loader.load_all()
+    assert count == 0
+
+
+def test_load_plugin_updates_mtime_on_success(loader, tmp_path):
+    p = tmp_path / "fresh.py"
+    p.write_text("def register_tools(r): pass\n")
+    assert str(p) not in loader._mtimes
+    loader._load_plugin(p)
+    assert str(p) in loader._mtimes
+
+
+def test_load_all_three_valid_plugins_returns_three(loader, tmp_path):
+    for name in ("a", "b", "c"):
+        (tmp_path / f"{name}.py").write_text("def register_tools(r): pass\n")
+    count = loader.load_all()
+    assert count == 3

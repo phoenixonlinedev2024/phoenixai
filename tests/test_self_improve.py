@@ -362,3 +362,51 @@ async def test_auto_fill_gaps_empty_when_no_gaps(tmp_path, monkeypatch):
     evolver = CapabilityEvolver(FakeJarvis())
     filled = await evolver.auto_fill_gaps()
     assert filled == []
+
+
+# ── BUILTIN_BENCHMARKS constant ───────────────────────────────────────────────
+
+def test_builtin_benchmarks_has_six_cases():
+    from jarvis.self_improve import BUILTIN_BENCHMARKS
+    assert len(BUILTIN_BENCHMARKS) == 6
+
+
+def test_builtin_benchmarks_each_has_id_and_keywords():
+    from jarvis.self_improve import BUILTIN_BENCHMARKS
+    for case in BUILTIN_BENCHMARKS:
+        assert isinstance(case.id, str) and len(case.id) > 0
+        assert isinstance(case.expected_keywords, list)
+        assert len(case.expected_keywords) >= 1
+
+
+# ── BenchmarkCase default fields ──────────────────────────────────────────────
+
+def test_benchmark_case_default_timeout():
+    case = BenchmarkCase("t", "prompt", ["kw"])
+    assert case.timeout == 30.0
+
+
+def test_benchmark_case_default_tool_required_is_none():
+    case = BenchmarkCase("t", "prompt", ["kw"])
+    assert case.tool_required is None
+
+
+# ── BenchmarkResult timestamp default ────────────────────────────────────────
+
+def test_benchmark_result_timestamp_default_is_set():
+    r = BenchmarkResult("c", True, 1.0, 0.1, "ok")
+    assert r.timestamp is not None
+    assert "T" in r.timestamp  # ISO 8601 format contains 'T'
+
+
+# ── run_suite with custom cases ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_suite_with_custom_cases(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    runner = BenchmarkRunner(mock_jarvis)
+    custom = [BenchmarkCase("custom1", "What is 17 × 23?", ["391"])]
+    summary = await runner.run_suite(cases=custom)
+    assert summary["total"] == 1
+    assert summary["passed"] == 1
