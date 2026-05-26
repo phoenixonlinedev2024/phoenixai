@@ -297,3 +297,209 @@ def test_keystore_all_generated_keys_start_with_jvs(tmp_path):
     keys = [ks.generate(name=f"k{i}") for i in range(5)]
     assert all(k.startswith("jvs_") for k in keys)
     assert len(set(keys)) == 5  # all unique
+
+
+# ── SecurityMiddleware ────────────────────────────────────────────────────────
+
+def _make_scope(path: str, headers: dict | None = None, scope_type: str = "http") -> dict:
+    raw_headers = [[k.encode(), v.encode()] for k, v in (headers or {}).items()]
+    return {"type": scope_type, "path": path, "headers": raw_headers}
+
+
+async def _collect_responses(middleware, scope) -> list[dict]:
+    sent = []
+
+    async def receive():
+        return {}
+
+    async def send(msg):
+        sent.append(msg)
+
+    await middleware(scope, receive, send)
+    return sent
+
+
+def _make_middleware(tmp_path, *, security_enabled: bool = True):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    rl = RateLimiter(limit=5, window=60)
+    inner = AsyncMock()
+
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = security_enabled
+        mw = SecurityMiddleware(inner, ks, rl)
+        mw._mock_cfg = mock_cfg
+    return mw, ks, rl, inner
+
+
+async def test_middleware_passes_through_when_security_disabled(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    rl = RateLimiter(limit=5, window=60)
+    inner = AsyncMock()
+    scope = _make_scope("/chat")
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = False
+        mw = SecurityMiddleware(inner, ks, rl)
+        await mw(scope, AsyncMock(), AsyncMock())
+    inner.assert_awaited_once()
+
+
+async def test_middleware_passes_through_non_http_scope(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    rl = RateLimiter(limit=5, window=60)
+    inner = AsyncMock()
+    scope = _make_scope("/chat", scope_type="websocket")
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = True
+        mw = SecurityMiddleware(inner, ks, rl)
+        await mw(scope, AsyncMock(), AsyncMock())
+    inner.assert_awaited_once()
+
+
+async def test_middleware_public_paths_pass_through(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    ks.generate(name="exists")  # ensure has_any() is True
+    rl = RateLimiter(limit=5, window=60)
+    inner = AsyncMock()
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = True
+        mw = SecurityMiddleware(inner, ks, rl)
+        for path in ("/", "/health", "/docs", "/openapi.json", "/metrics", "/ws/stream"):
+            inner.reset_mock()
+            scope = _make_scope(path)
+            await mw(scope, AsyncMock(), AsyncMock())
+            assert inner.await_count == 1, f"Expected pass-through for {path}"
+
+
+async def test_middleware_missing_key_no_keys_provisioned_bootstrap(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")  # empty — no keys
+    rl = RateLimiter(limit=5, window=60)
+    inner = AsyncMock()
+    scope = _make_scope("/chat")
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = True
+        mw = SecurityMiddleware(inner, ks, rl)
+        await mw(scope, AsyncMock(), AsyncMock())
+    inner.assert_awaited_once()
+
+
+async def test_middleware_missing_key_returns_401(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    ks.generate(name="provisioned")
+    rl = RateLimiter(limit=5, window=60)
+    inner = AsyncMock()
+    scope = _make_scope("/chat")  # no X-Api-Key header
+    responses = []
+    async def capture_send(msg):
+        responses.append(msg)
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = True
+        mw = SecurityMiddleware(inner, ks, rl)
+        await mw(scope, AsyncMock(), capture_send)
+    inner.assert_not_awaited()
+    start = next(r for r in responses if r["type"] == "http.response.start")
+    assert start["status"] == 401
+
+
+async def test_middleware_invalid_key_returns_403(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    ks.generate(name="provisioned")
+    rl = RateLimiter(limit=5, window=60)
+    inner = AsyncMock()
+    scope = _make_scope("/chat", headers={"x-api-key": "jvs_badkey"})
+    responses = []
+    async def capture_send(msg):
+        responses.append(msg)
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = True
+        mw = SecurityMiddleware(inner, ks, rl)
+        await mw(scope, AsyncMock(), capture_send)
+    inner.assert_not_awaited()
+    start = next(r for r in responses if r["type"] == "http.response.start")
+    assert start["status"] == 403
+
+
+async def test_middleware_non_admin_on_admin_route_returns_403(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    raw = ks.generate(name="user", role="user")
+    rl = RateLimiter(limit=5, window=60)
+    inner = AsyncMock()
+    scope = _make_scope("/schedule", headers={"x-api-key": raw})
+    responses = []
+    async def capture_send(msg):
+        responses.append(msg)
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = True
+        mw = SecurityMiddleware(inner, ks, rl)
+        await mw(scope, AsyncMock(), capture_send)
+    inner.assert_not_awaited()
+    start = next(r for r in responses if r["type"] == "http.response.start")
+    assert start["status"] == 403
+
+
+async def test_middleware_admin_on_admin_route_passes_through(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    raw = ks.generate(name="admin", role="admin")
+    rl = RateLimiter(limit=100, window=60)
+    inner = AsyncMock()
+    scope = _make_scope("/schedule", headers={"x-api-key": raw})
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = True
+        mw = SecurityMiddleware(inner, ks, rl)
+        await mw(scope, AsyncMock(), AsyncMock())
+    inner.assert_awaited_once()
+
+
+async def test_middleware_rate_limit_exceeded_returns_429(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    raw = ks.generate(name="user", role="user")
+    rl = RateLimiter(limit=2, window=60)
+    inner = AsyncMock()
+    # Exhaust the rate limiter
+    rl.is_allowed(raw)
+    rl.is_allowed(raw)
+    scope = _make_scope("/chat", headers={"x-api-key": raw})
+    responses = []
+    async def capture_send(msg):
+        responses.append(msg)
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = True
+        mw = SecurityMiddleware(inner, ks, rl)
+        await mw(scope, AsyncMock(), capture_send)
+    inner.assert_not_awaited()
+    start = next(r for r in responses if r["type"] == "http.response.start")
+    assert start["status"] == 429
+
+
+async def test_middleware_valid_key_passes_through(tmp_path):
+    from jarvis.security import KeyStore, RateLimiter, SecurityMiddleware
+    from unittest.mock import AsyncMock, patch
+    ks = KeyStore(path=tmp_path / "keys.json")
+    raw = ks.generate(name="user", role="user")
+    rl = RateLimiter(limit=100, window=60)
+    inner = AsyncMock()
+    scope = _make_scope("/chat", headers={"x-api-key": raw})
+    with patch("jarvis.security.cfg") as mock_cfg:
+        mock_cfg.SECURITY_ENABLED = True
+        mw = SecurityMiddleware(inner, ks, rl)
+        await mw(scope, AsyncMock(), AsyncMock())
+    inner.assert_awaited_once()

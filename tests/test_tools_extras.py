@@ -241,3 +241,138 @@ def test_validate_cron_comma_expression():
 def test_validate_cron_six_fields_invalid():
     result = _validate_cron("0 8 * * * *")
     assert "Invalid cron" in result
+
+
+# ── subagent_tools: delegation edge cases ────────────────────────────────────
+
+def test_delegate_no_pool_returns_error():
+    import jarvis.tools.subagent_tools as st
+    old_pool = st._pool
+    try:
+        st._pool = None
+        out = st._delegate("do something")
+        assert "not initialised" in out
+    finally:
+        st._pool = old_pool
+
+
+def test_delegate_parallel_no_pool_returns_error():
+    import jarvis.tools.subagent_tools as st
+    old_pool = st._pool
+    try:
+        st._pool = None
+        out = st._delegate_parallel([{"goal": "task1"}])
+        assert "not initialised" in out
+    finally:
+        st._pool = old_pool
+
+
+def test_delegate_exception_returns_error_string():
+    import jarvis.tools.subagent_tools as st
+    from unittest.mock import MagicMock, patch
+    fake_pool = MagicMock()
+    old_pool = st._pool
+    try:
+        st._pool = fake_pool
+        with patch("asyncio.run", side_effect=RuntimeError("pool exploded")):
+            out = st._delegate("do something")
+        assert "Subagent error" in out
+        assert "pool exploded" in out
+    finally:
+        st._pool = old_pool
+
+
+def test_delegate_parallel_exception_returns_error_string():
+    import jarvis.tools.subagent_tools as st
+    from unittest.mock import MagicMock, patch
+    fake_pool = MagicMock()
+    old_pool = st._pool
+    try:
+        st._pool = fake_pool
+        with patch("asyncio.run", side_effect=RuntimeError("parallel error")):
+            out = st._delegate_parallel([{"goal": "task1"}])
+        assert "Parallel subagent error" in out
+    finally:
+        st._pool = old_pool
+
+
+def test_delegate_parallel_result_truncated_to_500():
+    """Results longer than 500 chars are truncated per the slice in the implementation."""
+    import jarvis.tools.subagent_tools as st
+    import json
+    from unittest.mock import MagicMock, patch
+    fake_pool = MagicMock()
+    old_pool = st._pool
+    try:
+        st._pool = fake_pool
+        long_result = "x" * 600
+        fake_results = {"task_0": long_result}
+        with patch("asyncio.run", return_value=fake_results):
+            out = st._delegate_parallel([{"goal": "do task"}])
+        parsed = json.loads(out)
+        for val in parsed.values():
+            assert len(val) <= 500
+    finally:
+        st._pool = old_pool
+
+
+def test_register_tools_with_jarvis_none_skips_pool_creation():
+    """register_tools(registry, jarvis=None) should not create a pool."""
+    import jarvis.tools.subagent_tools as st
+    from jarvis.tools.registry import ToolRegistry
+    old_pool = st._pool
+    try:
+        st._pool = None
+        registry = ToolRegistry()
+        st.register_tools(registry, jarvis=None)
+        # Pool should still be None — jarvis=None skips SubagentPool creation
+        assert st._pool is None
+        # But tools should be registered
+        assert registry.get("delegate_task") is not None
+        assert registry.get("delegate_parallel") is not None
+    finally:
+        st._pool = old_pool
+
+
+# ── creator: _make_fn edge cases ─────────────────────────────────────────────
+
+def test_make_fn_no_run_function_raises():
+    """Code that doesn't define `run` raises KeyError."""
+    from jarvis.tools.creator import _make_fn
+    code = "x = 42"  # no run() defined
+    import pytest
+    with pytest.raises(KeyError):
+        _make_fn(code)
+
+
+def test_make_fn_syntax_error_raises():
+    """Syntactically invalid code raises SyntaxError."""
+    from jarvis.tools.creator import _make_fn
+    import pytest
+    with pytest.raises(SyntaxError):
+        _make_fn("def run(**kwargs):\n    return ??? invalid")
+
+
+def test_make_fn_run_uses_kwargs():
+    """The compiled run function can access all kwargs."""
+    from jarvis.tools.creator import _make_fn
+    code = "def run(**kwargs):\n    return f\"{kwargs['a']}-{kwargs['b']}\""
+    fn = _make_fn(code)
+    assert fn(a="hello", b="world") == "hello-world"
+
+
+# ── personality: all-defaults call returns pure base prompt ──────────────────
+
+def test_get_system_prompt_all_defaults_returns_base_only():
+    from jarvis.personality import get_system_prompt, PERSONALITY_PROFILES
+    prompt = get_system_prompt(profile="default", voice_mode=False, memory_context="", gap_context="")
+    assert prompt == PERSONALITY_PROFILES["default"]
+
+
+def test_get_system_prompt_both_memory_and_gap_context():
+    from jarvis.personality import get_system_prompt
+    prompt = get_system_prompt(memory_context="user hates spam", gap_context="can't parse PDFs")
+    assert "user hates spam" in prompt
+    assert "can't parse PDFs" in prompt
+    assert "Your Current Memory" in prompt
+    assert "Capability Gaps" in prompt
