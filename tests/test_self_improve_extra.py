@@ -521,3 +521,76 @@ def test_builtin_benchmarks_all_have_prompts():
     for case in BUILTIN_BENCHMARKS:
         assert len(case.prompt) > 5, f"Case '{case.id}' has too short prompt"
         assert len(case.expected_keywords) >= 1, f"Case '{case.id}' has no keywords"
+
+
+# ── BenchmarkCase custom values ──────────────────────────────────────────────
+
+def test_benchmark_case_custom_timeout():
+    case = BenchmarkCase("c", "prompt", ["kw"], timeout=60.0)
+    assert case.timeout == 60.0
+
+
+def test_benchmark_case_with_tool_required():
+    case = BenchmarkCase("c", "prompt", ["kw"], tool_required="web_search")
+    assert case.tool_required == "web_search"
+
+
+# ── BenchmarkRunner.run_suite with custom cases ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_suite_with_single_custom_case(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.self_improve.cfg.DATA_DIR", tmp_path)
+    jarvis = _make_jarvis_mock()
+    jarvis.chat = AsyncMock(return_value="391")
+    runner = BenchmarkRunner(jarvis)
+    custom = [BenchmarkCase("math", "17*23", ["391"])]
+    result = await runner.run_suite(cases=custom)
+    assert result["total"] == 1
+    assert result["passed"] == 1
+    assert result["pass_rate"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_run_suite_failed_case_recorded(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.self_improve.cfg.DATA_DIR", tmp_path)
+    jarvis = _make_jarvis_mock()
+    jarvis.chat = AsyncMock(return_value="wrong answer")
+    runner = BenchmarkRunner(jarvis)
+    custom = [BenchmarkCase("math", "17*23", ["391"])]
+    result = await runner.run_suite(cases=custom)
+    assert result["total"] == 1
+    assert result["passed"] == 0
+    assert result["failed"] == 1
+
+
+# ── CapabilityEvolver.auto_fill_gaps with empty gaps ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_auto_fill_gaps_empty_returns_empty_list():
+    jarvis = _make_jarvis_mock(gaps=[])
+    evolver = CapabilityEvolver(jarvis)
+    filled = await evolver.auto_fill_gaps()
+    assert filled == []
+
+
+# ── SelfImproveEngine components ──────────────────────────────────────────────
+
+def test_self_improve_engine_has_benchmarks_and_evolver():
+    jarvis = _make_jarvis_mock()
+    engine = SelfImproveEngine(jarvis)
+    assert isinstance(engine.benchmarks, BenchmarkRunner)
+    assert isinstance(engine.evolver, CapabilityEvolver)
+
+
+# ── BenchmarkResult score rounding ────────────────────────────────────────────
+
+def test_benchmark_result_to_dict_score_rounded_to_3_decimals():
+    r = BenchmarkResult("c", True, 0.123456, 0.5, "resp")
+    d = r.to_dict()
+    assert d["score"] == 0.123
+
+
+def test_benchmark_result_to_dict_latency_rounded():
+    r = BenchmarkResult("c", True, 1.0, 1.23456, "resp")
+    d = r.to_dict()
+    assert d["latency_s"] == 1.235

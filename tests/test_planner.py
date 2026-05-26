@@ -384,3 +384,81 @@ async def test_ab_test_result_dict_contains_all_fields():
     assert "score_a" in result
     assert "score_b" in result
     assert result["score_a"] == pytest.approx(0.95)
+
+
+# ── group_subtasks: subtasks with group=0 ────────────────────────────────────
+
+def test_group_subtasks_group_zero_is_first():
+    """Group 0 comes before group 1 in sorted order."""
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 1, "group": 1, "description": "b"},
+        {"id": 2, "group": 0, "description": "a"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert groups[0][0]["description"] == "a"
+    assert groups[1][0]["description"] == "b"
+
+
+# ── group_subtasks: two subtasks in same group ───────────────────────────────
+
+def test_group_subtasks_preserves_order_within_group():
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 1, "group": 1, "description": "first"},
+        {"id": 2, "group": 1, "description": "second"},
+        {"id": 3, "group": 1, "description": "third"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert len(groups) == 1
+    descs = [t["description"] for t in groups[0]]
+    assert descs == ["first", "second", "third"]
+
+
+# ── decompose: API error falls back to single subtask ────────────────────────
+
+@pytest.mark.asyncio
+async def test_decompose_api_exception_returns_single_subtask():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("network down"))
+    planner = TaskPlanner(client=client, memory=MagicMock())
+    out = await planner.decompose("my complex task")
+    assert len(out) == 1
+    assert out[0]["description"] == "my complex task"
+    assert out[0]["id"] == 1
+    assert out[0]["group"] == 1
+
+
+# ── score_confidence: code fence JSON format ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_score_confidence_code_fence_json_prefix():
+    """Response with ```json ... ``` fence is parsed correctly."""
+    payload = '```json\n{"score": 0.88, "reason": "good"}\n```'
+    client = _fake_client_returning(payload)
+    planner = TaskPlanner(client=client, memory=MagicMock())
+    score = await planner.score_confidence("task", "response")
+    assert score == pytest.approx(0.88)
+
+
+# ── ab_test: code fence JSON format ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_ab_test_code_fence_json_prefix():
+    """ab_test parses result from ```json ... ``` fence."""
+    payload = '```json\n{"winner":"B","score_a":0.3,"score_b":0.7,"reason":"B better"}\n```'
+    client = _fake_client_returning(payload)
+    mem = _fake_memory()
+    planner = TaskPlanner(client=client, memory=mem)
+    winner, result = await planner.ab_test("task", "A resp", "B resp")
+    assert winner == "B"
+
+
+# ── TaskPlanner initialization ────────────────────────────────────────────────
+
+def test_task_planner_stores_client_and_memory():
+    client = MagicMock()
+    memory = MagicMock()
+    planner = TaskPlanner(client=client, memory=memory)
+    assert planner.client is client
+    assert planner.memory is memory

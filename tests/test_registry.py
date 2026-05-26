@@ -984,3 +984,71 @@ def test_tool_dynamic_can_be_set_true():
     from jarvis.tools.registry import Tool
     t = Tool("t", "d", {}, fn=lambda: None, dynamic=True)
     assert t.dynamic is True
+
+
+# ── Tool.category default ─────────────────────────────────────────────────────
+
+def test_tool_category_default_is_general():
+    from jarvis.tools.registry import Tool
+    t = Tool("t", "d", {}, fn=lambda: None)
+    assert t.category == "general"
+
+
+def test_tool_category_custom():
+    from jarvis.tools.registry import Tool
+    t = Tool("t", "d", {}, fn=lambda: None, category="web")
+    assert t.category == "web"
+
+
+# ── ToolRegistry.all() and get() ─────────────────────────────────────────────
+
+def test_registry_all_returns_registered_tools():
+    from jarvis.tools.registry import Tool, ToolRegistry
+    reg = ToolRegistry()
+    t1 = Tool("a", "d", {}, fn=lambda: None)
+    t2 = Tool("b", "d", {}, fn=lambda: None)
+    reg.register(t1)
+    reg.register(t2)
+    all_tools = reg.all()
+    assert len(all_tools) == 2
+    assert t1 in all_tools
+    assert t2 in all_tools
+
+
+def test_registry_get_returns_none_for_missing():
+    from jarvis.tools.registry import ToolRegistry
+    reg = ToolRegistry()
+    assert reg.get("nonexistent_tool") is None
+
+
+def test_registry_overwrites_on_same_name():
+    from jarvis.tools.registry import Tool, ToolRegistry
+    reg = ToolRegistry()
+    t1 = Tool("name", "first", {}, fn=lambda: "first")
+    t2 = Tool("name", "second", {}, fn=lambda: "second")
+    reg.register(t1)
+    reg.register(t2)
+    assert reg.get("name").description == "second"
+    assert len(reg.all()) == 1
+
+
+# ── _execute_python no output ─────────────────────────────────────────────────
+
+def test_execute_python_no_output_returns_no_output_marker():
+    from jarvis.tools.registry import _execute_python
+    out = _execute_python("x = 1 + 1")
+    assert "(no output)" in out
+
+
+def test_execute_python_output_and_error():
+    from jarvis.tools.registry import _execute_python
+    out = _execute_python("print('hello'); import sys; sys.stderr.write('err')")
+    assert "hello" in out
+
+
+# ── _list_directory error handling ───────────────────────────────────────────
+
+def test_list_directory_nonexistent_path_returns_error():
+    from jarvis.tools.registry import _list_directory
+    out = _list_directory("/nonexistent/path/that/does/not/exist/xyz")
+    assert "List error" in out or "error" in out.lower()
