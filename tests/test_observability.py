@@ -322,3 +322,96 @@ def test_histogram_trim_keeps_newest_when_exactly_max_size():
     assert h.count == 3
     assert 1.0 not in h.observations
     assert 4.0 in h.observations
+
+
+# ── Histogram.p95 and p99 ─────────────────────────────────────────────────────
+
+def test_histogram_p95_empty_returns_zero():
+    from jarvis.observability import Histogram
+    h = Histogram(name="p95_empty")
+    assert h.p95 == 0.0
+
+
+def test_histogram_p99_empty_returns_zero():
+    from jarvis.observability import Histogram
+    h = Histogram(name="p99_empty")
+    assert h.p99 == 0.0
+
+
+def test_histogram_p95_single_observation():
+    from jarvis.observability import Histogram
+    h = Histogram(name="p95_single")
+    h.observe(0.5)
+    assert h.p95 == 0.5
+
+
+def test_histogram_p99_ten_observations():
+    from jarvis.observability import Histogram
+    h = Histogram(name="p99_ten")
+    for i in range(1, 11):
+        h.observe(float(i))
+    assert h.p99 == 10.0
+
+
+def test_histogram_total_sums_all_observations():
+    from jarvis.observability import Histogram
+    h = Histogram(name="total_test")
+    h.observe(1.0)
+    h.observe(2.0)
+    h.observe(3.0)
+    assert h.total == 6.0
+
+
+def test_histogram_avg_correct():
+    from jarvis.observability import Histogram
+    h = Histogram(name="avg_test")
+    h.observe(2.0)
+    h.observe(4.0)
+    assert h.avg == 3.0
+
+
+# ── MetricsRegistry.log_snapshot writes to file ───────────────────────────────
+
+def test_log_snapshot_creates_file(tmp_path, monkeypatch):
+    import json
+    from jarvis.observability import MetricsRegistry
+    monkeypatch.setattr("jarvis.config.cfg.LOGS_DIR", tmp_path / "logs")
+    reg = MetricsRegistry()
+    reg.inc("api.calls", 5)
+    reg.log_snapshot()
+    log_file = tmp_path / "logs" / "metrics.jsonl"
+    assert log_file.exists()
+    data = json.loads(log_file.read_text().strip())
+    assert data["counters"]["api.calls"] == 5
+
+
+def test_log_snapshot_appends_multiple():
+    import json, tempfile, pathlib
+    from jarvis.observability import MetricsRegistry
+    with tempfile.TemporaryDirectory() as tmp:
+        import unittest.mock as mock
+        reg = MetricsRegistry()
+        with mock.patch("jarvis.config.cfg.LOGS_DIR", pathlib.Path(tmp)):
+            reg.log_snapshot()
+            reg.log_snapshot()
+        lines = (pathlib.Path(tmp) / "metrics.jsonl").read_text().strip().splitlines()
+        assert len(lines) == 2
+
+
+# ── MetricsRegistry: counter and histogram stay independent ──────────────────
+
+def test_counter_value_after_multiple_incs():
+    from jarvis.observability import MetricsRegistry
+    reg = MetricsRegistry()
+    reg.inc("hits", 3)
+    reg.inc("hits", 7)
+    assert reg.counter("hits").value == 10
+
+
+def test_multiple_histograms_are_independent():
+    from jarvis.observability import MetricsRegistry
+    reg = MetricsRegistry()
+    reg.observe("latency_a", 0.1)
+    reg.observe("latency_b", 0.2)
+    assert reg.histogram("latency_a").count == 1
+    assert reg.histogram("latency_b").count == 1

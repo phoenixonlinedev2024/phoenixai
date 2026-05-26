@@ -623,3 +623,82 @@ async def test_subagent_pool_dispatch_one():
     pool = SubagentPool(parent, max_concurrent=2)
     result = await pool.dispatch_one("compute pi")
     assert result == "pool result"
+
+
+# ── SubagentPool: max_concurrent and parent stored ───────────────────────────
+
+def test_subagent_pool_stores_parent_and_max_concurrent():
+    parent = MagicMock()
+    pool = SubagentPool(parent, max_concurrent=3)
+    assert pool.parent is parent
+    assert pool.max_concurrent == 3
+
+
+def test_subagent_pool_results_empty_on_init():
+    parent = MagicMock()
+    pool = SubagentPool(parent)
+    assert pool._results == {}
+
+
+# ── SubagentPool.dispatch: task error path sets task.error ───────────────────
+
+@pytest.mark.asyncio
+async def test_subagent_pool_dispatch_exception_returns_error_prefix():
+    parent = MagicMock()
+    parent.client.messages.create = AsyncMock(side_effect=RuntimeError("boom"))
+    parent._get_model = MagicMock(return_value="claude-haiku-4-5-20251001")
+    parent.registry.anthropic_tools = MagicMock(return_value=[])
+
+    pool = SubagentPool(parent)
+    task = SubagentTask(goal="fail task")
+    results = await pool.dispatch([task])
+    assert task.id in results
+    assert "Error:" in results[task.id]
+    assert task.done is True
+    assert task.error is not None
+
+
+# ── SubagentPool.dispatch: two tasks both complete ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_subagent_pool_dispatch_two_tasks():
+    def make_resp(text):
+        blk = MagicMock()
+        blk.type = "text"
+        blk.text = text
+        resp = MagicMock()
+        resp.content = [blk]
+        return resp
+
+    parent = MagicMock()
+    parent.client.messages.create = AsyncMock(side_effect=[
+        make_resp("result_a"),
+        make_resp("result_b"),
+    ])
+    parent._get_model = MagicMock(return_value="claude-haiku-4-5-20251001")
+    parent.registry.anthropic_tools = MagicMock(return_value=[])
+
+    pool = SubagentPool(parent)
+    tasks = [SubagentTask(goal="task_a"), SubagentTask(goal="task_b")]
+    results = await pool.dispatch(tasks)
+    assert len(results) == 2
+    for task in tasks:
+        assert task.done is True
+
+
+# ── SubagentTask defaults ─────────────────────────────────────────────────────
+
+def test_subagent_task_id_is_unique():
+    t1 = SubagentTask(goal="a")
+    t2 = SubagentTask(goal="b")
+    assert t1.id != t2.id
+
+
+def test_subagent_task_done_false_initially():
+    t = SubagentTask(goal="test")
+    assert t.done is False
+
+
+def test_subagent_task_error_none_initially():
+    t = SubagentTask(goal="test")
+    assert t.error is None
