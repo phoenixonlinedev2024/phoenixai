@@ -750,3 +750,95 @@ def test_db_query_sqlalchemy_missing():
         from jarvis.tools.database_tools import _db_query
         out = _db_query("sqlite:///:memory:", "SELECT 1")
     assert "error" in out.lower() or "sqlalchemy" in out.lower() or "not installed" in out.lower()
+
+
+# ── git_branch checkout NEW branch (not in existing) ─────────────────────────
+
+def test_git_branch_checkout_new_branch():
+    """checkout=True with a name NOT in existing branches calls git.checkout(b=name)."""
+    fake, repo = _fake_git()
+    b_main = MagicMock(); b_main.name = "main"
+    repo.branches = [b_main]
+    repo.active_branch.name = "main"
+    with patch.dict(sys.modules, {"git": fake}):
+        out = _git_branch(".", name="brand-new", checkout=True)
+    assert "Switched" in out
+    repo.git.checkout.assert_called_once_with(b="brand-new")
+
+
+# ── git_log with custom n parameter ──────────────────────────────────────────
+
+def test_git_log_custom_n():
+    """_git_log passes custom n to iter_commits max_count."""
+    fake, repo = _fake_git()
+    commit = MagicMock()
+    commit.hexsha = "abc12345"
+    commit.committed_datetime.strftime.return_value = "2025-01-01"
+    commit.author.name = "Dev"
+    commit.message = "fix: bug"
+    repo.iter_commits.return_value = [commit]
+    with patch.dict(sys.modules, {"git": fake}):
+        _git_log(".", n=5)
+    repo.iter_commits.assert_called_once_with(max_count=5)
+
+
+# ── database _db_query with custom max_rows ───────────────────────────────────
+
+def test_db_query_custom_max_rows():
+    """_db_query uses max_rows to limit fetchmany results."""
+    from jarvis.tools.database_tools import _db_query
+    fake_sq = MagicMock()
+    fake_engine = MagicMock()
+    fake_conn_ctx = MagicMock()
+    fake_conn = MagicMock()
+    fake_result = MagicMock()
+    fake_result.returns_rows = True
+    fake_result.keys.return_value = ["id"]
+    fake_result.fetchmany.return_value = [(1,), (2,), (3,)]
+    fake_conn.execute.return_value = fake_result
+    fake_conn_ctx.__enter__ = MagicMock(return_value=fake_conn)
+    fake_conn_ctx.__exit__ = MagicMock(return_value=False)
+    fake_engine.connect.return_value = fake_conn_ctx
+    fake_sq.create_engine.return_value = fake_engine
+    fake_sq.text = MagicMock(side_effect=lambda s: s)
+    with patch.dict(sys.modules, {"sqlalchemy": fake_sq}):
+        out = _db_query("sqlite:///:memory:", "SELECT id FROM t", max_rows=3)
+    fake_result.fetchmany.assert_called_once_with(3)
+    assert "count" in out
+
+
+# ── pdf_metadata success path ─────────────────────────────────────────────────
+
+def test_pdf_metadata_page_count():
+    """_pdf_metadata reports page count from pdfplumber."""
+    from jarvis.tools.pdf_tools import _pdf_metadata
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__ = MagicMock(return_value=fake_pdf)
+    fake_pdf.__exit__ = MagicMock(return_value=False)
+    fake_pdf.metadata = {"Author": "Test Author", "Title": "Test Doc"}
+    fake_pdf.pages = [MagicMock(), MagicMock()]  # 2 pages
+    fake_pdfplumber = MagicMock()
+    fake_pdfplumber.open.return_value = fake_pdf
+    with patch.dict(sys.modules, {"pdfplumber": fake_pdfplumber}):
+        out = _pdf_metadata("/tmp/test.pdf")
+    data = json.loads(out)
+    assert data["pages"] == 2
+    assert data["Author"] == "Test Author"
+
+
+# ── extract_pdf_tables no tables on page ─────────────────────────────────────
+
+def test_extract_pdf_tables_no_tables():
+    """_extract_pdf_tables returns a message when page has no tables."""
+    from jarvis.tools.pdf_tools import _extract_pdf_tables
+    fake_page = MagicMock()
+    fake_page.extract_tables.return_value = []
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__ = MagicMock(return_value=fake_pdf)
+    fake_pdf.__exit__ = MagicMock(return_value=False)
+    fake_pdf.pages = [fake_page]
+    fake_pdfplumber = MagicMock()
+    fake_pdfplumber.open.return_value = fake_pdf
+    with patch.dict(sys.modules, {"pdfplumber": fake_pdfplumber}):
+        out = _extract_pdf_tables("/tmp/test.pdf", page=0)
+    assert "No tables" in out

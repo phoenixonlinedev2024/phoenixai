@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -241,3 +241,268 @@ def test_validate_cron_comma_expression():
 def test_validate_cron_six_fields_invalid():
     result = _validate_cron("0 8 * * * *")
     assert "Invalid cron" in result
+
+
+# ── subagent_tools: delegation edge cases ────────────────────────────────────
+
+def test_delegate_no_pool_returns_error():
+    import jarvis.tools.subagent_tools as st
+    old_pool = st._pool
+    try:
+        st._pool = None
+        out = st._delegate("do something")
+        assert "not initialised" in out
+    finally:
+        st._pool = old_pool
+
+
+def test_delegate_parallel_no_pool_returns_error():
+    import jarvis.tools.subagent_tools as st
+    old_pool = st._pool
+    try:
+        st._pool = None
+        out = st._delegate_parallel([{"goal": "task1"}])
+        assert "not initialised" in out
+    finally:
+        st._pool = old_pool
+
+
+def test_delegate_exception_returns_error_string():
+    import jarvis.tools.subagent_tools as st
+    from unittest.mock import MagicMock, patch
+    fake_pool = MagicMock()
+    old_pool = st._pool
+    try:
+        st._pool = fake_pool
+        with patch("asyncio.run", side_effect=RuntimeError("pool exploded")):
+            out = st._delegate("do something")
+        assert "Subagent error" in out
+        assert "pool exploded" in out
+    finally:
+        st._pool = old_pool
+
+
+def test_delegate_parallel_exception_returns_error_string():
+    import jarvis.tools.subagent_tools as st
+    from unittest.mock import MagicMock, patch
+    fake_pool = MagicMock()
+    old_pool = st._pool
+    try:
+        st._pool = fake_pool
+        with patch("asyncio.run", side_effect=RuntimeError("parallel error")):
+            out = st._delegate_parallel([{"goal": "task1"}])
+        assert "Parallel subagent error" in out
+    finally:
+        st._pool = old_pool
+
+
+def test_delegate_parallel_result_truncated_to_500():
+    """Results longer than 500 chars are truncated per the slice in the implementation."""
+    import jarvis.tools.subagent_tools as st
+    import json
+    from unittest.mock import MagicMock, patch
+    fake_pool = MagicMock()
+    old_pool = st._pool
+    try:
+        st._pool = fake_pool
+        long_result = "x" * 600
+        fake_results = {"task_0": long_result}
+        with patch("asyncio.run", return_value=fake_results):
+            out = st._delegate_parallel([{"goal": "do task"}])
+        parsed = json.loads(out)
+        for val in parsed.values():
+            assert len(val) <= 500
+    finally:
+        st._pool = old_pool
+
+
+def test_register_tools_with_jarvis_none_skips_pool_creation():
+    """register_tools(registry, jarvis=None) should not create a pool."""
+    import jarvis.tools.subagent_tools as st
+    from jarvis.tools.registry import ToolRegistry
+    old_pool = st._pool
+    try:
+        st._pool = None
+        registry = ToolRegistry()
+        st.register_tools(registry, jarvis=None)
+        # Pool should still be None — jarvis=None skips SubagentPool creation
+        assert st._pool is None
+        # But tools should be registered
+        assert registry.get("delegate_task") is not None
+        assert registry.get("delegate_parallel") is not None
+    finally:
+        st._pool = old_pool
+
+
+# ── creator: _make_fn edge cases ─────────────────────────────────────────────
+
+def test_make_fn_no_run_function_raises():
+    """Code that doesn't define `run` raises KeyError."""
+    from jarvis.tools.creator import _make_fn
+    code = "x = 42"  # no run() defined
+    import pytest
+    with pytest.raises(KeyError):
+        _make_fn(code)
+
+
+def test_make_fn_syntax_error_raises():
+    """Syntactically invalid code raises SyntaxError."""
+    from jarvis.tools.creator import _make_fn
+    import pytest
+    with pytest.raises(SyntaxError):
+        _make_fn("def run(**kwargs):\n    return ??? invalid")
+
+
+def test_make_fn_run_uses_kwargs():
+    """The compiled run function can access all kwargs."""
+    from jarvis.tools.creator import _make_fn
+    code = "def run(**kwargs):\n    return f\"{kwargs['a']}-{kwargs['b']}\""
+    fn = _make_fn(code)
+    assert fn(a="hello", b="world") == "hello-world"
+
+
+# ── personality: all-defaults call returns pure base prompt ──────────────────
+
+def test_get_system_prompt_all_defaults_returns_base_only():
+    from jarvis.personality import get_system_prompt, PERSONALITY_PROFILES
+    prompt = get_system_prompt(profile="default", voice_mode=False, memory_context="", gap_context="")
+    assert prompt == PERSONALITY_PROFILES["default"]
+
+
+def test_get_system_prompt_both_memory_and_gap_context():
+    from jarvis.personality import get_system_prompt
+    prompt = get_system_prompt(memory_context="user hates spam", gap_context="can't parse PDFs")
+    assert "user hates spam" in prompt
+    assert "can't parse PDFs" in prompt
+    assert "Your Current Memory" in prompt
+    assert "Capability Gaps" in prompt
+
+
+# ── geo_weather_tools ─────────────────────────────────────────────────────────
+
+from jarvis.tools.geo_weather_tools import (  # noqa: E402
+    _geocode, _get_weather, _read_rss, _ocr_image, _log_analyse,
+)
+
+
+def _fake_requests(get_mock):
+    fake = MagicMock()
+    fake.get = get_mock
+    return fake
+
+
+def test_geocode_no_results():
+    get_mock = MagicMock()
+    get_mock.return_value.json.return_value = []
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
+        out = _geocode("nowhere special")
+    assert "No results" in out
+
+
+def test_geocode_returns_lat_lon():
+    result = [{"display_name": "London, UK", "lat": "51.5", "lon": "-0.1"}]
+    get_mock = MagicMock()
+    get_mock.return_value.json.return_value = result
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
+        out = _geocode("London")
+    assert "lat:51.5" in out
+    assert "lon:-0.1" in out
+
+
+def test_geocode_exception_returns_error():
+    get_mock = MagicMock(side_effect=Exception("network down"))
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
+        out = _geocode("anywhere")
+    assert "Geocode error" in out
+
+
+def test_get_weather_location_not_found():
+    get_mock = MagicMock()
+    get_mock.return_value.json.return_value = []
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
+        out = _get_weather("UnknownCity")
+    assert "Location not found" in out
+
+
+def test_get_weather_returns_lines():
+    geo = [{"display_name": "Paris, France", "lat": "48.8", "lon": "2.3"}]
+    daily = {
+        "time": ["2026-05-26"],
+        "temperature_2m_max": [22.0],
+        "temperature_2m_min": [14.0],
+        "precipitation_sum": [0.5],
+    }
+    get_mock = MagicMock()
+    get_mock.return_value.json.side_effect = [geo, {"daily": daily}]
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
+        out = _get_weather("Paris", days=1)
+    assert "Paris, France" in out
+    assert "2026-05-26" in out
+
+
+def test_get_weather_exception_returns_error():
+    get_mock = MagicMock(side_effect=Exception("timeout"))
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
+        out = _get_weather("Paris")
+    assert "Weather error" in out
+
+
+def test_read_rss_no_feedparser_fallback(tmp_path):
+    xml = (
+        "<rss><channel>"
+        "<item><title>Hello</title><link>http://x.com</link></item>"
+        "</channel></rss>"
+    )
+    fake_resp = MagicMock()
+    fake_resp.text = xml
+    get_mock = MagicMock(return_value=fake_resp)
+    with patch.dict(sys.modules, {"feedparser": None, "requests": _fake_requests(get_mock)}):
+        out = _read_rss("http://example.com/feed")
+    assert "Hello" in out
+
+
+def test_read_rss_feedparser_present():
+    fake_entry = MagicMock()
+    fake_entry.get = lambda k, d="": {"title": "Item1", "link": "http://x", "summary": "desc"}.get(k, d)
+    fake_feed = MagicMock()
+    fake_feed.entries = [fake_entry]
+    fake_fp = MagicMock()
+    fake_fp.parse.return_value = fake_feed
+    with patch.dict(sys.modules, {"feedparser": fake_fp}):
+        out = _read_rss("http://example.com/rss")
+    assert "Item1" in out
+
+
+def test_ocr_image_no_pytesseract():
+    with patch.dict(sys.modules, {"pytesseract": None}):
+        out = _ocr_image("/tmp/fake.png")
+    assert "not installed" in out.lower() or "pytesseract" in out
+
+
+def test_log_analyse_tail_and_count(tmp_path):
+    log = tmp_path / "app.log"
+    log.write_text("INFO line\nERROR boom\nDEBUG ok\n")
+    out = _log_analyse(str(log))
+    assert "Total lines:" in out
+    assert "Errors:" in out
+
+
+def test_log_analyse_pattern_filter(tmp_path):
+    log = tmp_path / "app.log"
+    log.write_text("INFO foo\nERROR bar\nINFO baz\n")
+    out = _log_analyse(str(log), pattern="ERROR")
+    assert "ERROR" in out
+
+
+def test_log_analyse_missing_file():
+    out = _log_analyse("/nonexistent/file.log")
+    assert "Log error" in out
+
+
+def test_geo_weather_register_tools_populates_registry():
+    from jarvis.tools.registry import build_registry
+    from jarvis.tools.geo_weather_tools import register_tools
+    reg = build_registry()
+    register_tools(reg)
+    for name in ("geocode", "get_weather", "read_rss", "ocr_image", "analyse_logs"):
+        assert reg.get(name) is not None

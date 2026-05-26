@@ -589,3 +589,224 @@ def test_get_scheduled_tasks_excludes_disabled(memory_store):
     names = [t["name"] for t in tasks]
     assert "active" in names
     assert "inactive" not in names
+
+
+def test_search_facts_empty_query_returns_all_facts(memory_store):
+    """search_facts('') matches all facts (up to limit 20)."""
+    memory_store.store_fact("alpha", "value1")
+    memory_store.store_fact("beta", "value2")
+    results = memory_store.search_facts("")
+    keys = [r["key"] for r in results]
+    assert "alpha" in keys
+    assert "beta" in keys
+
+
+def test_get_open_gaps_returns_empty_initially(memory_store):
+    """Fresh store has no open gaps."""
+    assert memory_store.get_open_gaps() == []
+
+
+def test_get_monitor_targets_returns_empty_initially(memory_store):
+    """Fresh store has no monitor targets."""
+    assert memory_store.get_monitor_targets() == []
+
+
+def test_all_facts_returns_empty_initially(memory_store):
+    """all_facts() on a fresh store returns an empty list."""
+    assert memory_store.all_facts() == []
+
+
+def test_search_facts_returns_confidence(memory_store):
+    """search_facts includes confidence in results."""
+    memory_store.store_fact("mykey", "myval", confidence=0.77)
+    results = memory_store.search_facts("mykey")
+    assert len(results) == 1
+    assert abs(results[0]["confidence"] - 0.77) < 1e-6
+
+
+def test_store_lesson_context_stored(memory_store):
+    """store_lesson saves the context string alongside the lesson."""
+    memory_store.store_lesson("lesson text", context="test context")
+    with memory_store._conn() as conn:
+        row = conn.execute("SELECT context FROM lessons").fetchone()
+    assert row["context"] == "test context"
+
+
+# ── summary() exact format string ────────────────────────────────────────────
+
+def test_summary_format_includes_all_labels(memory_store):
+    """summary() output contains all six entity labels."""
+    s = memory_store.summary()
+    assert "facts" in s
+    assert "lessons" in s
+    assert "skills" in s
+    assert "scheduled tasks" in s
+    assert "open gaps" in s
+    assert "monitors" in s
+
+
+def test_summary_format_starts_with_memory_prefix(memory_store):
+    """summary() starts with 'Memory:'."""
+    s = memory_store.summary()
+    assert s.startswith("Memory:")
+
+
+def test_summary_reflects_scheduled_task_count(memory_store):
+    """summary() reflects scheduled task count when a task is added."""
+    memory_store.add_scheduled_task("daily_report", "0 8 * * *", "generate report")
+    s = memory_store.summary()
+    assert "1" in s
+
+
+def test_record_skill_use_increments_usage_on_same_skill(memory_store):
+    """record_skill_use on the same skill increments usage_count correctly."""
+    memory_store.record_skill_use("search", "web search", success=True)
+    memory_store.record_skill_use("search", "web search", success=True)
+    memory_store.record_skill_use("search", "web search", success=True)
+    with memory_store._conn() as conn:
+        row = conn.execute("SELECT usage_count FROM skills WHERE name='search'").fetchone()
+    assert row["usage_count"] == 3
+
+
+def test_store_fact_with_list_value(memory_store):
+    """store_fact serialises a list value; recall_fact returns it as a list."""
+    memory_store.store_fact("tags", ["python", "ai", "jarvis"])
+    result = memory_store.recall_fact("tags")
+    assert result == ["python", "ai", "jarvis"]
+
+
+def test_search_facts_case_insensitive_match(memory_store):
+    """search_facts matches keys and values case-insensitively via LIKE."""
+    memory_store.store_fact("FavoriteColor", "Blue")
+    results_upper = memory_store.search_facts("FAVORITECOLOR")
+    results_lower = memory_store.search_facts("favoritecolor")
+    # Both should return the fact (LIKE in SQLite is case-insensitive for ASCII)
+    assert any(r["key"] == "FavoriteColor" for r in results_upper) or \
+           any(r["key"] == "FavoriteColor" for r in results_lower)
+
+
+# ── get_history ordering ──────────────────────────────────────────────────────
+
+def test_get_history_returns_in_chronological_order(memory_store):
+    memory_store.save_message("sess", "user", "first")
+    memory_store.save_message("sess", "assistant", "second")
+    memory_store.save_message("sess", "user", "third")
+    history = memory_store.get_history("sess", limit=10)
+    assert history[0]["content"] == "first"
+    assert history[1]["content"] == "second"
+    assert history[2]["content"] == "third"
+
+
+def test_get_history_respects_limit(memory_store):
+    for i in range(10):
+        memory_store.save_message("limit_sess", "user", f"msg{i}")
+    history = memory_store.get_history("limit_sess", limit=3)
+    assert len(history) == 3
+    assert history[-1]["content"] == "msg9"
+
+
+def test_get_history_role_preserved(memory_store):
+    memory_store.save_message("roles", "user", "hi")
+    memory_store.save_message("roles", "assistant", "hello")
+    history = memory_store.get_history("roles")
+    roles = [m["role"] for m in history]
+    assert roles == ["user", "assistant"]
+
+
+# ── log_gap context field is stored ──────────────────────────────────────────
+
+def test_log_gap_stores_context(memory_store):
+    memory_store.log_gap("need pdf OCR", context="user tried to read scanned PDF")
+    gaps = memory_store.get_open_gaps()
+    assert any(g["context"] == "user tried to read scanned PDF" for g in gaps)
+
+
+def test_log_gap_without_context_defaults_to_empty(memory_store):
+    memory_store.log_gap("missing feature")
+    gaps = memory_store.get_open_gaps()
+    assert any(g["description"] == "missing feature" for g in gaps)
+
+
+# ── resolve_gap marks gap as resolved ────────────────────────────────────────
+
+def test_resolve_gap_reduces_open_gap_count(memory_store):
+    memory_store.log_gap("gap one")
+    memory_store.log_gap("gap two")
+    before = memory_store.get_open_gaps()
+    gap_id = before[-1]["id"]
+    memory_store.resolve_gap(gap_id)
+    after = memory_store.get_open_gaps()
+    assert len(after) == len(before) - 1
+
+
+# ── store_lesson with context ─────────────────────────────────────────────────
+
+def test_store_lesson_content_retrievable(memory_store):
+    memory_store.store_lesson("Always check edge cases", context="unit test session")
+    lessons = memory_store.get_lessons(limit=5)
+    assert "Always check edge cases" in lessons
+
+
+# ── recall_fact returns None for missing key ──────────────────────────────────
+
+def test_recall_fact_missing_key_returns_none(memory_store):
+    result = memory_store.recall_fact("no_such_key_xyz")
+    assert result is None
+
+
+def test_recall_fact_returns_stored_value(memory_store):
+    memory_store.store_fact("favorite_color", "blue")
+    assert memory_store.recall_fact("favorite_color") == "blue"
+
+
+# ── update_monitor_hash changes the hash ─────────────────────────────────────
+
+def test_update_monitor_hash(memory_store):
+    memory_store.add_monitor_target("hash_target", "url", "https://x.com", "alert")
+    memory_store.update_monitor_hash("hash_target", "abc123")
+    targets = memory_store.get_monitor_targets()
+    t = next((t for t in targets if t["name"] == "hash_target"), None)
+    assert t is not None
+    assert t["last_hash"] == "abc123"
+
+
+# ── get_lessons respects limit ────────────────────────────────────────────────
+
+def test_get_lessons_respects_limit(memory_store):
+    for i in range(10):
+        memory_store.store_lesson(f"lesson_{i}")
+    lessons = memory_store.get_lessons(limit=3)
+    assert len(lessons) <= 3
+
+
+# ── all_facts returns all stored facts ───────────────────────────────────────
+
+def test_all_facts_returns_all(memory_store):
+    memory_store.store_fact("k1", "v1")
+    memory_store.store_fact("k2", "v2")
+    facts = memory_store.all_facts()
+    keys = [f["key"] for f in facts]
+    assert "k1" in keys
+    assert "k2" in keys
+
+
+# ── store_fact updates existing key ──────────────────────────────────────────
+
+def test_store_fact_updates_existing_key(memory_store):
+    memory_store.store_fact("mutable_key", "first_value")
+    memory_store.store_fact("mutable_key", "second_value")
+    result = memory_store.recall_fact("mutable_key")
+    assert result == "second_value"
+
+
+# ── get_open_gaps returns only unresolved ────────────────────────────────────
+
+def test_get_open_gaps_only_unresolved(memory_store):
+    memory_store.log_gap("gap_a")
+    memory_store.log_gap("gap_b")
+    gaps = memory_store.get_open_gaps()
+    gap_b = next((g for g in gaps if g["description"] == "gap_b"), None)
+    assert gap_b is not None
+    memory_store.resolve_gap(gap_b["id"])
+    open_gaps = [g["description"] for g in memory_store.get_open_gaps()]
+    assert "gap_b" not in open_gaps

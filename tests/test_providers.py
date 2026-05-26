@@ -570,3 +570,81 @@ def test_to_openai_messages_non_dict_block_in_list():
     msgs = [{"role": "user", "content": ["plain string block"]}]
     result = _to_openai_messages(msgs, system="")
     assert "plain string block" in result[0]["content"]
+
+
+# ── _to_openai_messages dict block without 'content' key ─────────────────────
+
+def test_to_openai_messages_dict_block_missing_content_key():
+    """Dict block with no 'content' key contributes empty string."""
+    msgs = [{"role": "user", "content": [{"other_key": "val"}]}]
+    result = _to_openai_messages(msgs, system="")
+    assert result[0]["content"] == ""
+
+
+def test_to_openai_messages_mixed_dict_and_string_blocks():
+    """Mixed dict and string blocks are all included in output."""
+    msgs = [{"role": "user", "content": [
+        {"content": "from dict"},
+        "from string",
+        {"content": "also dict"},
+    ]}]
+    result = _to_openai_messages(msgs, system="")
+    assert "from dict" in result[0]["content"]
+    assert "from string" in result[0]["content"]
+    assert "also dict" in result[0]["content"]
+
+
+# ── ProviderRouter create_message explicit max_tokens ────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_message_explicit_max_tokens_overrides_cfg(router):
+    """Passing max_tokens to create_message uses it instead of cfg.MAX_TOKENS."""
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text="ok")]
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=mock_resp)
+    router._clients["anthropic"] = mock_client
+
+    await router.create_message(
+        [{"role": "user", "content": "hi"}],
+        max_tokens=42,
+    )
+    kwargs = mock_client.messages.create.call_args[1]
+    assert kwargs["max_tokens"] == 42
+
+
+@pytest.mark.asyncio
+async def test_create_message_system_prompt_passed_through(router):
+    """System prompt passed to create_message is forwarded to the API call."""
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text="ok")]
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=mock_resp)
+    router._clients["anthropic"] = mock_client
+
+    await router.create_message(
+        [{"role": "user", "content": "hi"}],
+        system="You are a test assistant.",
+    )
+    kwargs = mock_client.messages.create.call_args[1]
+    assert kwargs["system"] == "You are a test assistant."
+
+
+# ── health_check all-pass path ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_health_check_all_providers_true_when_clients_available(monkeypatch):
+    """health_check returns True for each provider that returns a non-None client."""
+    router = ProviderRouter()
+    for provider in ("anthropic", "openrouter", "openai_compat", "ollama"):
+        monkeypatch.setattr(router, f"_{provider}", lambda: MagicMock())
+    result = await router.health_check()
+    assert all(result.values())
+
+
+# ── _WrappedResponse stop_reason is always end_turn ──────────────────────────
+
+def test_wrapped_response_stop_reason_always_end_turn():
+    for text in ("", "hello", "x" * 1000):
+        r = _WrappedResponse(text)
+        assert r.stop_reason == "end_turn"

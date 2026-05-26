@@ -683,7 +683,7 @@ def test_api_call_text_fallback_non_json():
     fake_requests = MagicMock()
     fake_requests.request.return_value = fake_resp
 
-    with patch("requests.request", fake_requests.request):
+    with patch.dict(sys.modules, {"requests": fake_requests}):
         out = _api_call("https://example.com/endpoint")
     assert "plain text response" in out
 
@@ -698,3 +698,447 @@ def test_tool_to_anthropic_includes_input_schema():
     assert d["input_schema"] == schema
     assert "description" in d
     assert d["name"] == "test_t"
+
+
+# ── Additional coverage ────────────────────────────────────────────────────────
+
+def test_web_search_max_results_forwarded_to_ddgs():
+    """_web_search passes max_results to DDGS.text()."""
+    fake_ddgs = MagicMock()
+    fake_ddgs.__enter__ = MagicMock(return_value=fake_ddgs)
+    fake_ddgs.__exit__ = MagicMock(return_value=False)
+    fake_ddgs.text = MagicMock(return_value=[{"title": "T", "href": "http://x", "body": "b"}])
+    fake_module = MagicMock()
+    fake_module.DDGS = MagicMock(return_value=fake_ddgs)
+    with patch.dict(sys.modules, {"duckduckgo_search": fake_module}):
+        _web_search("test", max_results=7)
+    fake_ddgs.text.assert_called_once_with("test", max_results=7)
+
+
+def test_web_fetch_http_error_returns_fetch_error():
+    """_web_fetch returns error string when raise_for_status raises."""
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.side_effect = Exception("404 Not Found")
+    fake_requests = MagicMock()
+    fake_requests.get = MagicMock(return_value=fake_resp)
+    fake_bs4 = MagicMock()
+    with patch.dict(sys.modules, {"requests": fake_requests, "bs4": fake_bs4}):
+        out = _web_fetch("https://example.com/notfound")
+    assert "Fetch error" in out
+    assert "404" in out
+
+
+def test_api_call_put_method():
+    """_api_call sends PUT request and returns JSON response."""
+    fake_requests = MagicMock()
+    mock_req = fake_requests.request
+    resp = MagicMock()
+    resp.json.return_value = {"updated": True}
+    mock_req.return_value = resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        out = _api_call("https://api.example.com/item/1", method="PUT", body={"name": "new"})
+    mock_req.assert_called_once()
+    call_args = mock_req.call_args
+    assert call_args[0][0] == "PUT"
+    assert "updated" in out
+
+
+def test_api_call_custom_headers_forwarded():
+    """_api_call passes the headers dict to requests.request."""
+    fake_requests = MagicMock()
+    mock_req = fake_requests.request
+    resp = MagicMock()
+    resp.json.return_value = {}
+    mock_req.return_value = resp
+    custom_headers = {"Authorization": "Bearer token123"}
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        _api_call("https://api.example.com/data", headers=custom_headers)
+    _, kwargs = mock_req.call_args
+    assert kwargs["headers"] == custom_headers
+
+
+def test_api_call_delete_method_returns_json():
+    """_api_call sends DELETE request and returns JSON."""
+    fake_requests = MagicMock()
+    mock_req = fake_requests.request
+    resp = MagicMock()
+    resp.json.return_value = {"deleted": True}
+    mock_req.return_value = resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        out = _api_call("https://api.example.com/item/99", method="DELETE")
+    assert "deleted" in out
+    call_method = mock_req.call_args[0][0]
+    assert call_method == "DELETE"
+
+
+def test_get_system_info_format_has_cpu_memory_disk():
+    """_get_system_info returns string with CPU, Memory, Disk sections."""
+    fake_mem = MagicMock()
+    fake_mem.percent = 42.0
+    fake_mem.used = 1024 ** 3  # 1 GB
+    fake_mem.total = 4 * 1024 ** 3
+    fake_disk = MagicMock()
+    fake_disk.percent = 75.0
+    fake_disk.used = 50 * 1024 ** 3
+    fake_disk.total = 100 * 1024 ** 3
+    fake_psutil = MagicMock()
+    fake_psutil.cpu_percent = MagicMock(return_value=33.5)
+    fake_psutil.virtual_memory = MagicMock(return_value=fake_mem)
+    fake_psutil.disk_usage = MagicMock(return_value=fake_disk)
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        out = _get_system_info()
+    assert "CPU" in out
+    assert "33.5" in out
+    assert "Memory" in out
+    assert "42.0" in out
+    assert "Disk" in out
+    assert "75.0" in out
+
+
+def test_build_registry_nlp_cron_and_sandbox_tools_registered():
+    """build_registry registers tools from nlp_cron and sandbox_tools modules."""
+    from jarvis.tools.registry import build_registry
+    reg = build_registry()
+    names = reg.names()
+    assert "nl_to_cron" in names
+    assert "sandbox_run" in names
+    assert "sandbox_run_code" in names
+
+
+def test_web_fetch_truncates_long_content():
+    """_web_fetch caps output at 8000 chars for very large pages."""
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.text = "<p>" + "x" * 9000 + "</p>"
+    fake_requests = MagicMock()
+    fake_requests.get = MagicMock(return_value=fake_resp)
+
+    class FakeSoup:
+        def __init__(self, text, parser): pass
+        def __call__(self, tags): return []
+        def get_text(self, separator="\n", strip=False): return "y" * 9000
+
+    fake_bs4 = MagicMock()
+    fake_bs4.BeautifulSoup = FakeSoup
+
+    with patch.dict(sys.modules, {"requests": fake_requests, "bs4": fake_bs4}):
+        out = _web_fetch("https://example.com/large")
+    assert len(out) == 8000
+
+
+def test_list_directory_lists_dirs_before_files(tmp_path):
+    """_list_directory sorts dirs before files (key=lambda: (is_file, name))."""
+    (tmp_path / "a_file.txt").write_text("x")
+    (tmp_path / "b_subdir").mkdir()
+    out = _list_directory(str(tmp_path))
+    lines = out.splitlines()
+    # Directory should appear before file in the output
+    dir_pos = next(i for i, l in enumerate(lines) if "[DIR]" in l)
+    file_pos = next(i for i, l in enumerate(lines) if "[FILE]" in l)
+    assert dir_pos < file_pos
+
+
+def test_run_shell_no_output_shows_exit_code():
+    """_run_shell with no stdout/stderr still returns the exit code line."""
+    out = _run_shell("true")  # no output, exit 0
+    assert "Exit code:" in out
+    assert "0" in out
+
+
+def test_run_shell_exception_returns_error():
+    """_run_shell exception (e.g. FileNotFoundError) returns 'Shell error:'."""
+    import subprocess
+    with patch("subprocess.run", side_effect=OSError("bad cmd")):
+        out = _run_shell("nonexistent_binary")
+    assert "Shell error" in out
+
+
+def test_execute_python_stderr_included():
+    """_execute_python captures stderr from the executed code."""
+    out = _execute_python("import sys; print('err', file=sys.stderr)")
+    assert "err" in out
+
+
+def test_write_and_run_code_typescript_no_runner():
+    """TypeScript maps to .ts but has no runner — returns 'No runner configured'."""
+    out = _write_and_run_code("typescript", "const x: number = 1;")
+    assert "No runner" in out
+
+
+def test_web_search_returns_error_on_exception():
+    """_web_search returns an error string when DDGS raises."""
+    fake_ddgs_instance = MagicMock()
+    fake_ddgs_instance.__enter__ = MagicMock(side_effect=RuntimeError("ddgs down"))
+    fake_ddgs_instance.__exit__ = MagicMock(return_value=False)
+    fake_module = MagicMock()
+    fake_module.DDGS = MagicMock(return_value=fake_ddgs_instance)
+    with patch.dict(sys.modules, {"duckduckgo_search": fake_module}):
+        out = _web_search("test query")
+    assert "Search error" in out
+
+
+def test_read_file_not_found_returns_error():
+    """_read_file on a nonexistent path returns a 'Read error:' string."""
+    out = _read_file("/nonexistent/path/file_xyz.txt")
+    assert "Read error" in out
+
+
+def test_api_call_json_parse_error_returns_text_response():
+    """When response is not JSON, _api_call returns resp.text."""
+    fake_requests = MagicMock()
+    mock_req = fake_requests.request
+    resp = MagicMock()
+    resp.json.side_effect = ValueError("not json")
+    resp.text = "plain text response"
+    mock_req.return_value = resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        out = _api_call("https://example.com")
+    assert "plain text response" in out
+
+
+# ── Tool.to_anthropic() format ────────────────────────────────────────────────
+
+def test_tool_to_anthropic_includes_required_keys():
+    """Tool.to_anthropic() returns name, description, and input_schema."""
+    from jarvis.tools.registry import Tool
+    t = Tool(
+        name="my_tool",
+        description="Does something.",
+        input_schema={"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        fn=lambda x: x,
+    )
+    d = t.to_anthropic()
+    assert d["name"] == "my_tool"
+    assert d["description"] == "Does something."
+    assert "input_schema" in d
+
+
+# ── Tool.run() calls fn with kwargs ──────────────────────────────────────────
+
+def test_tool_run_passes_kwargs_to_fn():
+    """Tool.run() forwards all keyword arguments to the wrapped function."""
+    from jarvis.tools.registry import Tool
+    results = []
+    def my_fn(x, y):
+        results.append((x, y))
+        return f"{x}+{y}"
+    t = Tool(name="add", description="add", input_schema={}, fn=my_fn)
+    out = t.run(x=3, y=4)
+    assert out == "3+4"
+    assert results == [(3, 4)]
+
+
+# ── ToolRegistry.anthropic_tools() returns list of dicts ─────────────────────
+
+def test_anthropic_tools_returns_list_of_dicts():
+    """anthropic_tools() returns a list with name, description, input_schema keys."""
+    from jarvis.tools.registry import Tool, ToolRegistry
+    reg = ToolRegistry()
+    reg.register(Tool("t1", "desc1", {"type": "object"}, fn=lambda: None))
+    reg.register(Tool("t2", "desc2", {"type": "object"}, fn=lambda: None))
+    tools = reg.anthropic_tools()
+    assert len(tools) == 2
+    for t in tools:
+        assert "name" in t
+        assert "description" in t
+        assert "input_schema" in t
+
+
+# ── ToolRegistry.names() returns registered tool names ────────────────────────
+
+def test_registry_names_returns_all_registered():
+    from jarvis.tools.registry import Tool, ToolRegistry
+    reg = ToolRegistry()
+    reg.register(Tool("alpha", "d", {}, fn=lambda: None))
+    reg.register(Tool("beta", "d", {}, fn=lambda: None))
+    names = reg.names()
+    assert "alpha" in names
+    assert "beta" in names
+    assert len(names) == 2
+
+
+# ── _web_search with no results returns the 'No results' message ─────────────
+
+def test_web_search_no_results_message():
+    """_web_search returns 'No results found.' when DDGS returns empty list."""
+    fake_ddgs_instance = MagicMock()
+    fake_ddgs_instance.__enter__ = MagicMock(return_value=fake_ddgs_instance)
+    fake_ddgs_instance.__exit__ = MagicMock(return_value=False)
+    fake_ddgs_instance.text = MagicMock(return_value=[])
+    fake_module = MagicMock()
+    fake_module.DDGS = MagicMock(return_value=fake_ddgs_instance)
+    with patch.dict(sys.modules, {"duckduckgo_search": fake_module}):
+        out = _web_search("obscure query xyz")
+    assert out == "No results found."
+
+
+# ── _run_shell with cwd parameter ────────────────────────────────────────────
+
+def test_run_shell_with_cwd(tmp_path):
+    """_run_shell passes cwd to subprocess.run."""
+    out = _run_shell("pwd", cwd=str(tmp_path))
+    assert str(tmp_path) in out
+
+
+# ── Tool.dynamic flag defaults to False ──────────────────────────────────────
+
+def test_tool_dynamic_defaults_to_false():
+    from jarvis.tools.registry import Tool
+    t = Tool("t", "d", {}, fn=lambda: None)
+    assert t.dynamic is False
+
+
+def test_tool_dynamic_can_be_set_true():
+    from jarvis.tools.registry import Tool
+    t = Tool("t", "d", {}, fn=lambda: None, dynamic=True)
+    assert t.dynamic is True
+
+
+# ── Tool.category default ─────────────────────────────────────────────────────
+
+def test_tool_category_default_is_general():
+    from jarvis.tools.registry import Tool
+    t = Tool("t", "d", {}, fn=lambda: None)
+    assert t.category == "general"
+
+
+def test_tool_category_custom():
+    from jarvis.tools.registry import Tool
+    t = Tool("t", "d", {}, fn=lambda: None, category="web")
+    assert t.category == "web"
+
+
+# ── ToolRegistry.all() and get() ─────────────────────────────────────────────
+
+def test_registry_all_returns_registered_tools():
+    from jarvis.tools.registry import Tool, ToolRegistry
+    reg = ToolRegistry()
+    t1 = Tool("a", "d", {}, fn=lambda: None)
+    t2 = Tool("b", "d", {}, fn=lambda: None)
+    reg.register(t1)
+    reg.register(t2)
+    all_tools = reg.all()
+    assert len(all_tools) == 2
+    assert t1 in all_tools
+    assert t2 in all_tools
+
+
+def test_registry_get_returns_none_for_missing():
+    from jarvis.tools.registry import ToolRegistry
+    reg = ToolRegistry()
+    assert reg.get("nonexistent_tool") is None
+
+
+def test_registry_overwrites_on_same_name():
+    from jarvis.tools.registry import Tool, ToolRegistry
+    reg = ToolRegistry()
+    t1 = Tool("name", "first", {}, fn=lambda: "first")
+    t2 = Tool("name", "second", {}, fn=lambda: "second")
+    reg.register(t1)
+    reg.register(t2)
+    assert reg.get("name").description == "second"
+    assert len(reg.all()) == 1
+
+
+# ── _execute_python no output ─────────────────────────────────────────────────
+
+def test_execute_python_no_output_returns_no_output_marker():
+    from jarvis.tools.registry import _execute_python
+    out = _execute_python("x = 1 + 1")
+    assert "(no output)" in out
+
+
+def test_execute_python_output_and_error():
+    from jarvis.tools.registry import _execute_python
+    out = _execute_python("print('hello'); import sys; sys.stderr.write('err')")
+    assert "hello" in out
+
+
+# ── _list_directory error handling ───────────────────────────────────────────
+
+def test_list_directory_nonexistent_path_returns_error():
+    from jarvis.tools.registry import _list_directory
+    out = _list_directory("/nonexistent/path/that/does/not/exist/xyz")
+    assert "List error" in out or "error" in out.lower()
+
+
+# ── _get_system_info error path ───────────────────────────────────────────────
+
+def test_get_system_info_error_returns_system_info_error():
+    with patch.dict(sys.modules, {"psutil": None}):
+        out = _get_system_info()
+    assert "System info error" in out or "error" in out.lower()
+
+
+def test_get_system_info_with_psutil_returns_cpu():
+    fake_psutil = MagicMock()
+    fake_psutil.cpu_percent.return_value = 42.0
+    mem = MagicMock()
+    mem.percent = 55.0
+    mem.used = 2 * 1024**2
+    mem.total = 8 * 1024**2
+    fake_psutil.virtual_memory.return_value = mem
+    disk = MagicMock()
+    disk.percent = 30.0
+    disk.used = 50 * 1024**3
+    disk.total = 200 * 1024**3
+    fake_psutil.disk_usage.return_value = disk
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        out = _get_system_info()
+    assert "CPU:" in out
+    assert "Memory:" in out
+    assert "Disk:" in out
+
+
+# ── _api_call: successful JSON vs text response ───────────────────────────────
+
+def test_api_call_returns_json_string():
+    fake_resp = MagicMock()
+    fake_resp.headers = {"Content-Type": "application/json"}
+    fake_resp.json.return_value = {"status": "ok"}
+    fake_requests = MagicMock()
+    fake_requests.request.return_value = fake_resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        out = _api_call("https://api.example.com/status")
+    assert "status" in out
+
+
+def test_api_call_returns_text_when_not_json():
+    fake_resp = MagicMock()
+    fake_resp.headers = {"Content-Type": "text/plain"}
+    fake_resp.json.side_effect = ValueError("not json")
+    fake_resp.text = "pong"
+    fake_requests = MagicMock()
+    fake_requests.request.return_value = fake_resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        out = _api_call("https://api.example.com/ping")
+    assert "pong" in out
+
+
+# ── _write_file creates file with correct content ─────────────────────────────
+
+def test_write_file_creates_file(tmp_path):
+    from jarvis.tools.registry import _write_file
+    p = str(tmp_path / "out.txt")
+    out = _write_file(p, "hello world")
+    assert "Written" in out or "Wrote" in out
+    assert (tmp_path / "out.txt").read_text() == "hello world"
+
+
+# ── _read_file reads file content ─────────────────────────────────────────────
+
+def test_read_file_returns_content(tmp_path):
+    f = tmp_path / "data.txt"
+    f.write_text("sample content")
+    out = _read_file(str(f))
+    assert "sample content" in out
+
+
+# ── _list_directory returns file names ────────────────────────────────────────
+
+def test_list_directory_returns_file_names(tmp_path):
+    (tmp_path / "alpha.txt").write_text("a")
+    (tmp_path / "beta.txt").write_text("b")
+    out = _list_directory(str(tmp_path))
+    assert "alpha.txt" in out
+    assert "beta.txt" in out

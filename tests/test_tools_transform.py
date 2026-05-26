@@ -488,3 +488,58 @@ def test_json_to_yaml_missing_pyyaml_v2(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     result = transform_tools._json_to_yaml('{"k": "v"}')
     assert "not installed" in result.lower() or "PyYAML" in result
+
+
+# ── _text_diff: truncates at 6000 chars ──────────────────────────────────────
+
+def test_text_diff_truncates_at_6000_chars():
+    """Diff output is capped at 6000 chars."""
+    from jarvis.tools.transform_tools import _text_diff
+    # Create texts that produce a very large diff
+    text_a = "\n".join(f"line_a_{i}" for i in range(2000))
+    text_b = "\n".join(f"line_b_{i}" for i in range(2000))
+    result = _text_diff(text_a, text_b)
+    assert len(result) <= 6000
+
+
+# ── _file_diff: error path ────────────────────────────────────────────────────
+
+def test_file_diff_error_message():
+    """_file_diff on missing files returns 'Diff error:' prefix."""
+    from jarvis.tools.transform_tools import _file_diff
+    result = _file_diff("/does/not/exist.txt", "/also/missing.txt")
+    assert "Diff error" in result
+
+
+# ── _jq_query: pure python nested key ────────────────────────────────────────
+
+def test_jq_query_pure_python_nested():
+    """Pure Python path handles nested key access like .a.b."""
+    from jarvis.tools.transform_tools import _jq_query
+    from unittest.mock import patch
+    data = '{"a": {"b": "deep"}}'
+    with patch("subprocess.run", side_effect=FileNotFoundError):
+        # jq not found + jq_lib not available → pure python path
+        import sys
+        with patch.dict(sys.modules, {"jq": None}):
+            result = _jq_query(data, ".a.b")
+    # Either returns "deep" from pure python or "jq not available"
+    assert "deep" in result or "jq not available" in result
+
+
+# ── _validate_json: list type ─────────────────────────────────────────────────
+
+def test_validate_json_list_type():
+    """A valid JSON array reports type 'list'."""
+    from jarvis.tools.transform_tools import _validate_json
+    result = _validate_json("[1, 2, 3]")
+    assert "list" in result.lower()
+
+
+# ── _regex_test: unknown flag letter is silently ignored ─────────────────────
+
+def test_regex_test_unknown_flag_ignored():
+    """Unknown flag letter doesn't raise — it's silently ignored."""
+    from jarvis.tools.transform_tools import _regex_test
+    result = _regex_test("hello", "say hello world", flags="z")
+    assert "hello" in result  # still matches

@@ -550,3 +550,274 @@ async def test_nl_scheduler_run_now_increments_error_count():
         await sched.run_now(job.id)
     assert job.error_count == 1
     assert "failed" in job.last_status
+
+
+# ── TaskQueue.history() with limit > history size returns all ─────────────────
+
+def test_task_queue_history_limit_larger_than_history():
+    """history(limit=100) when only 3 entries exist returns all 3."""
+    from jarvis.scheduling import TaskQueue
+    queue = TaskQueue()
+    for i in range(3):
+        queue._history.append({"id": str(i), "name": f"t{i}", "status": "ok",
+                                "started": "s", "finished": "f"})
+    result = queue.history(limit=100)
+    assert len(result) == 3
+
+
+# ── ScheduledJob.enabled defaults to True ────────────────────────────────────
+
+def test_scheduled_job_enabled_default():
+    """ScheduledJob.enabled is True by default."""
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob(name="test")
+    assert job.enabled is True
+
+
+# ── NLScheduler.add() stores job in _jobs dict ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_add_stores_job_in_dict():
+    """add() inserts the new ScheduledJob into _jobs under its id."""
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    job = await sched.add("myjob", "every day", "do something")
+    assert job.id in sched._jobs
+    assert sched._jobs[job.id] is job
+
+
+# ── NLScheduler.run_now() success path updates run_count ─────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_run_now_success_updates_run_count():
+    """Successful run_now increments job.run_count and sets last_status."""
+    from jarvis.scheduling import NLScheduler
+    from unittest.mock import AsyncMock
+    j = _fake_jarvis()
+    j.chat = AsyncMock(return_value="done!")
+    sched = NLScheduler(j)
+    job = await sched.add("ok-job", "every hour", "some prompt")
+    result = await sched.run_now(job.id)
+    assert result == "done!"
+    assert job.run_count == 1
+    assert job.last_status == "success"
+
+
+# ── NLScheduler.list_jobs() empty scheduler ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_list_jobs_empty_scheduler_returns_empty():
+    """list_jobs() on a fresh NLScheduler returns []."""
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    assert sched.list_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_list_jobs_no_tag_filter_returns_all():
+    """list_jobs() with no tag filter returns all jobs."""
+    from jarvis.scheduling import NLScheduler, Priority
+    sched = NLScheduler(_fake_jarvis())
+    await sched.add("job1", "every hour", "prompt1", tags=["web"])
+    await sched.add("job2", "every day", "prompt2", tags=["email"])
+    jobs = sched.list_jobs()
+    assert len(jobs) == 2
+
+
+# ── ScheduledJob.to_dict() with non-None last_run / last_status ───────────────
+
+def test_scheduled_job_to_dict_with_last_run_and_status():
+    """last_run and last_status appear in to_dict() when set."""
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob(name="j", cron="* * * * *", prompt="do thing")
+    job.last_run = "2024-01-01T00:00:00+00:00"
+    job.last_status = "success"
+    d = job.to_dict()
+    assert d["last_run"] == "2024-01-01T00:00:00+00:00"
+    assert d["last_status"] == "success"
+
+
+def test_scheduled_job_to_dict_null_last_run_by_default():
+    """A new ScheduledJob has last_run and last_status as None in to_dict()."""
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    d = job.to_dict()
+    assert d["last_run"] is None
+    assert d["last_status"] is None
+
+
+# ── TaskQueue.pending tracks enqueued items ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_task_queue_pending_increments_on_enqueue():
+    """pending count grows with each enqueued task."""
+    from jarvis.scheduling import TaskQueue, Priority
+    queue = TaskQueue()
+    assert queue.pending == 0
+    async def noop(): pass
+    await queue.enqueue(noop, "t1", Priority.NORMAL)
+    assert queue.pending == 1
+    await queue.enqueue(noop, "t2", Priority.HIGH)
+    assert queue.pending == 2
+
+
+# ── NLScheduler.remove returns True/False ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_remove_returns_true_when_found():
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    job = await sched.add("rem_job", "every day", "daily task")
+    result = sched.remove(job.id)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_remove_returns_false_for_unknown_id():
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    result = sched.remove("nonexistent_job_id")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_list_jobs_sorted_by_priority_descending():
+    from jarvis.scheduling import NLScheduler, Priority
+    sched = NLScheduler(_fake_jarvis())
+    await sched.add("low_job", "every day", "low", priority=Priority.LOW)
+    await sched.add("high_job", "every day", "high", priority=Priority.HIGH)
+    await sched.add("normal_job", "every day", "normal", priority=Priority.NORMAL)
+    jobs = sched.list_jobs()
+    priorities = [j["priority"] for j in jobs]
+    assert priorities[0] == "HIGH"
+    assert priorities[-1] == "LOW"
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_list_jobs_tag_filter_no_match():
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    await sched.add("tagged_job", "every hour", "prompt", tags=["finance"])
+    jobs = sched.list_jobs(tag="nonexistent_tag")
+    assert jobs == []
+
+
+# ── ScheduledJob fields and to_dict completeness ─────────────────────────────
+
+def test_scheduled_job_error_count_default_zero():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    assert job.error_count == 0
+
+
+def test_scheduled_job_to_dict_includes_error_count():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    job.error_count = 5
+    d = job.to_dict()
+    assert d["error_count"] == 5
+
+
+def test_scheduled_job_to_dict_includes_tags_list():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob(tags=["web", "daily"])
+    d = job.to_dict()
+    assert d["tags"] == ["web", "daily"]
+
+
+def test_scheduled_job_to_dict_run_count():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    job.run_count = 7
+    d = job.to_dict()
+    assert d["run_count"] == 7
+
+
+# ── Priority values ───────────────────────────────────────────────────────────
+
+def test_priority_critical_is_highest():
+    from jarvis.scheduling import Priority
+    assert Priority.CRITICAL > Priority.HIGH > Priority.NORMAL > Priority.LOW
+
+
+# ── ScheduledJob.id is 8-char hex ─────────────────────────────────────────────
+
+def test_scheduled_job_id_is_8_char_hex():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    assert len(job.id) == 8
+    assert all(c in "0123456789abcdef" for c in job.id)
+
+
+def test_scheduled_job_ids_are_unique():
+    from jarvis.scheduling import ScheduledJob
+    ids = {ScheduledJob().id for _ in range(20)}
+    assert len(ids) == 20
+
+
+# ── ScheduledJob.to_dict priority is a string ────────────────────────────────
+
+def test_scheduled_job_to_dict_priority_is_string():
+    from jarvis.scheduling import ScheduledJob, Priority
+    job = ScheduledJob()
+    job.priority = Priority.HIGH
+    d = job.to_dict()
+    assert d["priority"] == "HIGH"
+
+
+def test_scheduled_job_to_dict_enabled_default_true():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    assert job.to_dict()["enabled"] is True
+
+
+# ── NLScheduler.add with tags ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_add_stores_tags():
+    from jarvis.scheduling import NLScheduler, Priority
+    jarvis = MagicMock()
+    jarvis.memory.add_scheduled_task = MagicMock()
+    sched = NLScheduler(jarvis)
+    job = await sched.add("tagged", "every morning", "do stuff", tags=["daily", "report"])
+    assert "daily" in job.tags
+    assert "report" in job.tags
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_add_stores_priority():
+    from jarvis.scheduling import NLScheduler, Priority
+    jarvis = MagicMock()
+    jarvis.memory.add_scheduled_task = MagicMock()
+    sched = NLScheduler(jarvis)
+    job = await sched.add("high_prio", "every morning", "do it", priority=Priority.HIGH)
+    assert job.priority == Priority.HIGH
+
+
+# ── NLScheduler.run_now increments run_count ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_now_increments_run_count():
+    from jarvis.scheduling import NLScheduler
+    from unittest.mock import AsyncMock as AM
+    jarvis = MagicMock()
+    jarvis.memory.add_scheduled_task = MagicMock()
+    jarvis.chat = AM(return_value="done")
+    sched = NLScheduler(jarvis)
+    job = await sched.add("counter_job", "every morning", "tick")
+    await sched.run_now(job.id)
+    await sched.run_now(job.id)
+    assert job.run_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_now_sets_last_status_success():
+    from jarvis.scheduling import NLScheduler
+    from unittest.mock import AsyncMock as AM
+    jarvis = MagicMock()
+    jarvis.memory.add_scheduled_task = MagicMock()
+    jarvis.chat = AM(return_value="ok")
+    sched = NLScheduler(jarvis)
+    job = await sched.add("status_job", "* * * * *", "hi")
+    await sched.run_now(job.id)
+    assert job.last_status == "success"

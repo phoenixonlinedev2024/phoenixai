@@ -192,3 +192,126 @@ def test_get_system_prompt_gap_context_section_label():
 
 def test_jarvis_system_prompt_is_default():
     assert JARVIS_SYSTEM_PROMPT == PERSONALITY_PROFILES["default"]
+
+
+# ── Additional personality constant tests ─────────────────────────────────────
+
+def test_personality_profiles_is_dict():
+    assert isinstance(PERSONALITY_PROFILES, dict)
+
+
+def test_personality_profiles_count_is_five():
+    assert len(PERSONALITY_PROFILES) == 5
+
+
+def test_all_profile_keys_are_lowercase():
+    for key in PERSONALITY_PROFILES:
+        assert key == key.lower(), f"Profile key '{key}' is not lowercase"
+
+
+def test_capability_created_template_has_name_placeholder():
+    assert "{name}" in JARVIS_CAPABILITY_CREATED_TEMPLATE
+
+
+def test_learning_template_has_count_placeholder():
+    assert "{count}" in JARVIS_LEARNING_TEMPLATE
+
+
+def test_capability_created_template_is_string():
+    assert isinstance(JARVIS_CAPABILITY_CREATED_TEMPLATE, str)
+    assert len(JARVIS_CAPABILITY_CREATED_TEMPLATE) > 10
+
+
+def test_jarvis_wake_responses_all_non_empty():
+    for response in JARVIS_WAKE_RESPONSES:
+        assert len(response) > 0, "Wake response should not be empty"
+
+
+def test_jarvis_wake_responses_at_least_three():
+    assert len(JARVIS_WAKE_RESPONSES) >= 3
+
+
+def test_jarvis_voice_intro_contains_jarvis():
+    assert "JARVIS" in JARVIS_VOICE_INTRO
+
+
+def test_get_system_prompt_no_duplicate_newlines_at_start():
+    prompt = get_system_prompt()
+    assert not prompt.startswith("\n\n")
+
+
+def test_get_system_prompt_gap_and_memory_both_included():
+    prompt = get_system_prompt(
+        memory_context="user is an engineer",
+        gap_context="no OCR tool",
+    )
+    assert "engineer" in prompt
+    assert "OCR tool" in prompt
+    assert "Your Current Memory" in prompt
+    assert "Capability Gaps" in prompt
+
+
+# ── voice_mode addendum ───────────────────────────────────────────────────────
+
+def test_get_system_prompt_voice_mode_adds_addendum():
+    prompt = get_system_prompt(voice_mode=True)
+    assert "Voice Mode Active" in prompt
+
+
+def test_get_system_prompt_voice_mode_false_no_addendum():
+    prompt = get_system_prompt(voice_mode=False)
+    assert "Voice Mode Active" not in prompt
+
+
+def test_get_system_prompt_voice_mode_with_profile():
+    prompt = get_system_prompt(profile="terse", voice_mode=True)
+    assert "Terse" in prompt
+    assert "Voice Mode Active" in prompt
+
+
+# ── specific profile content ──────────────────────────────────────────────────
+
+def test_professional_profile_mentions_formal():
+    assert "formal" in PERSONALITY_PROFILES["professional"].lower()
+
+
+def test_casual_profile_mentions_friendly():
+    assert "friendly" in PERSONALITY_PROFILES["casual"].lower()
+
+
+def test_terse_profile_mentions_few_words():
+    assert "few words" in PERSONALITY_PROFILES["terse"].lower()
+
+
+def test_verbose_profile_mentions_detail():
+    assert "detail" in PERSONALITY_PROFILES["verbose"].lower()
+
+
+# ── template formatting ───────────────────────────────────────────────────────
+
+def test_capability_template_formats_name():
+    msg = JARVIS_CAPABILITY_CREATED_TEMPLATE.format(name="csv_parser")
+    assert "csv_parser" in msg
+
+
+def test_learning_template_formats_count():
+    msg = JARVIS_LEARNING_TEMPLATE.format(count=3)
+    assert "3" in msg
+
+
+def test_learning_template_has_insight_word():
+    assert "insight" in JARVIS_LEARNING_TEMPLATE
+
+
+# ── base identity contents ────────────────────────────────────────────────────
+
+def test_default_profile_mentions_jarvis():
+    assert "JARVIS" in PERSONALITY_PROFILES["default"]
+
+
+def test_default_profile_longer_than_100_chars():
+    assert len(PERSONALITY_PROFILES["default"]) > 100
+
+
+def test_voice_intro_ends_with_question_mark_or_period():
+    assert JARVIS_VOICE_INTRO.endswith("?") or JARVIS_VOICE_INTRO.endswith(".")

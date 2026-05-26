@@ -698,3 +698,84 @@ def test_collector_stats_all_failures(collector):
     assert stats["failure"] == 2
     assert stats["success"] == 0
     assert stats["avg_reward"] == pytest.approx(0.0)
+
+
+# ── Turn field defaults ───────────────────────────────────────────────────────
+
+def test_turn_tool_calls_default_empty_list():
+    from jarvis.research.trajectory import Turn
+    t = Turn(role="user", content="hello")
+    assert t.tool_calls == []
+
+
+def test_turn_tool_results_default_empty_list():
+    from jarvis.research.trajectory import Turn
+    t = Turn(role="user", content="hello")
+    assert t.tool_results == []
+
+
+def test_turn_reward_default_none():
+    from jarvis.research.trajectory import Turn
+    t = Turn(role="assistant", content="response")
+    assert t.reward is None
+
+
+# ── Trajectory field defaults ─────────────────────────────────────────────────
+
+def test_trajectory_metadata_default_empty_dict():
+    from jarvis.research.trajectory import Trajectory
+    tr = Trajectory()
+    assert tr.metadata == {}
+
+
+def test_trajectory_outcome_default_unknown():
+    from jarvis.research.trajectory import Trajectory
+    tr = Trajectory()
+    assert tr.outcome == "unknown"
+
+
+def test_trajectory_reward_default_zero():
+    from jarvis.research.trajectory import Trajectory
+    tr = Trajectory()
+    assert tr.reward == 0.0
+
+
+def test_trajectory_id_is_hex_string():
+    from jarvis.research.trajectory import Trajectory
+    tr = Trajectory()
+    assert len(tr.id) == 32
+    int(tr.id, 16)
+
+
+# ── TrajectoryCollector.complete saves and removes from active ────────────────
+
+def test_complete_removes_session_from_active(collector):
+    collector.start("sess_remove", task="test")
+    collector.complete("sess_remove")
+    assert collector.get("sess_remove") is None
+
+
+def test_complete_returns_message_with_id_and_turns(collector):
+    collector.start("sess_msg", task="test")
+    collector.record_turn("sess_msg", "user", "question")
+    collector.record_turn("sess_msg", "assistant", "answer")
+    msg = collector.complete("sess_msg", outcome="success", reward=0.9)
+    assert "1 turns" in msg or "2 turns" in msg
+    assert "0.9" in msg
+
+
+def test_complete_unknown_session_returns_message(collector):
+    msg = collector.complete("never_started")
+    assert "No active trajectory" in msg
+
+
+# ── TrajectoryCollector.start stores task ─────────────────────────────────────
+
+def test_start_stores_task_in_trajectory(collector):
+    traj = collector.start("task_sess", task="build a web scraper")
+    assert traj.task == "build a web scraper"
+
+
+def test_start_stores_session_id(collector):
+    traj = collector.start("sid123")
+    assert traj.session_id == "sid123"

@@ -367,3 +367,263 @@ def test_stats_empty_bus(bus):
     assert s["topics"] == 0
     assert s["history_size"] == 0
     assert s["subscribers"] == {}
+
+
+# ── stats() reflects subscriber counts after subscribe/unsubscribe ────────────
+
+def test_stats_reflects_subscriber_count_after_subscribe(bus):
+    async def h(msg): pass
+    bus.subscribe("events", h)
+    s = bus.stats()
+    assert s["subscribers"]["events"] == 1
+
+
+def test_stats_after_unsubscribe_shows_zero_handlers(bus):
+    async def h(msg): pass
+    bus.subscribe("events", h)
+    bus.unsubscribe("events", h)
+    s = bus.stats()
+    assert s["subscribers"]["events"] == 0
+
+
+# ── ACPMessage to_dict() includes all expected fields ─────────────────────────
+
+def test_acp_message_to_dict_has_all_keys():
+    msg = ACPMessage(topic="t.t", payload={"key": "val"}, sender="bot")
+    d = msg.to_dict()
+    assert "id" in d
+    assert "topic" in d
+    assert "payload" in d
+    assert "sender" in d
+    assert "timestamp" in d
+    assert d["topic"] == "t.t"
+    assert d["sender"] == "bot"
+    assert d["payload"] == {"key": "val"}
+
+
+# ── history() limit=0 slices [-0:] which is all messages ─────────────────────
+
+@pytest.mark.asyncio
+async def test_history_all_messages_when_limit_exceeds_count(bus):
+    """History with limit larger than stored messages returns everything."""
+    await bus.publish("a", payload=1)
+    await bus.publish("a", payload=2)
+    h = bus.history(limit=100)
+    assert len(h) == 2
+
+
+# ── publish with no subscribers still appends to history ─────────────────────
+
+@pytest.mark.asyncio
+async def test_publish_to_unsubscribed_topic_still_recorded(bus):
+    """Messages published to topics with no subscribers still appear in history."""
+    await bus.publish("no.listeners", payload="silent")
+    h = bus.history(topic="no.listeners")
+    assert len(h) == 1
+    assert h[0]["payload"] == "silent"
+
+
+# ── history() without topic returns all topics ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_history_no_topic_returns_all(bus):
+    await bus.publish("topic.a", payload="a")
+    await bus.publish("topic.b", payload="b")
+    h = bus.history()
+    assert len(h) == 2
+
+
+# ── subscribe same handler twice duplicates delivery ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_subscribe_same_handler_twice_receives_twice(bus):
+    received = []
+    async def h(msg): received.append(msg)
+    bus.subscribe("dupe", h)
+    bus.subscribe("dupe", h)
+    await bus.publish("dupe", payload="x")
+    assert len(received) == 2
+
+
+# ── ACPMessage.timestamp is ISO format ───────────────────────────────────────
+
+def test_acp_message_timestamp_is_iso_format():
+    """ACPMessage.timestamp is an ISO-format UTC datetime string."""
+    msg = ACPMessage(topic="test")
+    ts = msg.timestamp
+    assert "T" in ts
+    assert "+" in ts or "Z" in ts or ts.endswith("+00:00")
+
+
+# ── bus.stats() grows with topics ────────────────────────────────────────────
+
+def test_stats_topic_count_grows_with_subscriptions(bus):
+    """stats() topic count increases as new topics are subscribed."""
+    async def h(msg): pass
+    assert bus.stats()["topics"] == 0
+    bus.subscribe("alpha", h)
+    assert bus.stats()["topics"] == 1
+    bus.subscribe("beta", h)
+    assert bus.stats()["topics"] == 2
+
+
+@pytest.mark.asyncio
+async def test_stats_history_size_grows_with_publishes(bus):
+    """stats() history_size grows by 1 for each published message."""
+    assert bus.stats()["history_size"] == 0
+    await bus.publish("events", payload="first")
+    assert bus.stats()["history_size"] == 1
+    await bus.publish("events", payload="second")
+    assert bus.stats()["history_size"] == 2
+
+
+# ── ACPMessage default sender ─────────────────────────────────────────────────
+
+def test_acp_message_default_sender_is_jarvis():
+    """ACPMessage.sender defaults to 'jarvis'."""
+    msg = ACPMessage(topic="t")
+    assert msg.sender == "jarvis"
+
+
+# ── publish_sync with running loop enqueues task ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_publish_sync_in_running_loop_enqueues_message(bus):
+    """publish_sync() creates a task when a loop is running."""
+    bus.publish_sync("sync.topic", payload="sync_value")
+    await asyncio.sleep(0)  # let the task run
+    h = bus.history(topic="sync.topic")
+    assert len(h) >= 1
+    assert h[0]["payload"] == "sync_value"
+
+
+# ── MessageBus.topics() ──────────────────────────────────────────────────────
+
+def test_topics_empty_on_new_bus(bus):
+    assert bus.topics() == []
+
+
+def test_topics_returns_subscribed_topics(bus):
+    async def h(msg): pass
+    bus.subscribe("t1", h)
+    bus.subscribe("t2", h)
+    topics = bus.topics()
+    assert "t1" in topics
+    assert "t2" in topics
+
+
+# ── ACPMessage to_dict keys ───────────────────────────────────────────────────
+
+def test_acp_message_to_dict_contains_five_keys():
+    msg = ACPMessage(topic="hello", payload=42)
+    d = msg.to_dict()
+    assert set(d.keys()) == {"id", "topic", "payload", "sender", "timestamp"}
+
+
+def test_acp_message_to_dict_payload_preserved():
+    data = {"result": 100, "ok": True}
+    msg = ACPMessage(topic="result", payload=data)
+    assert msg.to_dict()["payload"] == data
+
+
+def test_acp_message_to_dict_topic_preserved():
+    msg = ACPMessage(topic="my.special.topic")
+    assert msg.to_dict()["topic"] == "my.special.topic"
+
+
+# ── MessageBus history _max_history trim ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_bus_history_trims_to_max_history():
+    from jarvis.acp import MessageBus
+    small_bus = MessageBus()
+    small_bus._max_history = 5
+    for i in range(8):
+        await small_bus.publish("events", payload=i)
+    assert len(small_bus._history) == 5
+    assert small_bus._history[0].payload == 3
+
+
+# ── stats subscribers dict ────────────────────────────────────────────────────
+
+def test_stats_subscribers_dict_has_correct_counts(bus):
+    async def h1(msg): pass
+    async def h2(msg): pass
+    bus.subscribe("ch", h1)
+    bus.subscribe("ch", h2)
+    stats = bus.stats()
+    assert stats["subscribers"]["ch"] == 2
+
+
+# ── unsubscribe removes handler ───────────────────────────────────────────────
+
+def test_unsubscribe_removes_handler(bus):
+    received = []
+
+    async def h(msg):
+        received.append(msg.payload)
+
+    bus.subscribe("unsubscribe_test", h)
+    bus.unsubscribe("unsubscribe_test", h)
+    assert h not in bus._subs.get("unsubscribe_test", [])
+
+
+def test_unsubscribe_nonexistent_topic_is_safe(bus):
+    async def h(msg): pass
+    bus.unsubscribe("no_such_topic", h)
+
+
+# ── wildcard '*' subscription receives all messages ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_wildcard_subscription_receives_all_topics(bus):
+    received = []
+
+    async def catch_all(msg):
+        received.append(msg.topic)
+
+    bus.subscribe("*", catch_all)
+    try:
+        await bus.publish("topic_a", "x")
+        await bus.publish("topic_b", "y")
+    finally:
+        bus.unsubscribe("*", catch_all)
+
+    assert "topic_a" in received
+    assert "topic_b" in received
+
+
+# ── history with topic filter ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_history_topic_filter_returns_only_matching(bus):
+    await bus.publish("fruit", "apple")
+    await bus.publish("veggies", "carrot")
+    result = bus.history(topic="fruit")
+    assert all(m["topic"] == "fruit" for m in result)
+
+
+# ── ACPMessage id is short hex string ─────────────────────────────────────────
+
+def test_acp_message_id_is_8_char_hex():
+    from jarvis.acp import ACPMessage
+    msg = ACPMessage()
+    assert len(msg.id) == 8
+    assert all(c in "0123456789abcdef" for c in msg.id)
+
+
+# ── ACPMessage sender default is jarvis ──────────────────────────────────────
+
+def test_acp_message_sender_default():
+    from jarvis.acp import ACPMessage
+    msg = ACPMessage()
+    assert msg.sender == "jarvis"
+
+
+# ── publish with custom sender is stored ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_publish_custom_sender_stored_in_history(bus):
+    await bus.publish("agent_channel", "data", sender="subagent_1")
+    recent = bus.history(topic="agent_channel", limit=1)
+    assert recent[-1]["sender"] == "subagent_1"

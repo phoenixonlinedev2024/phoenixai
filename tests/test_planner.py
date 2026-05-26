@@ -340,3 +340,241 @@ async def test_ab_test_winner_default_on_missing_key():
     planner = TaskPlanner(client=client, memory=mem)
     winner, result = await planner.ab_test("task", "a", "b")
     assert winner == "A"
+
+
+# ── group_subtasks: 4-group case ─────────────────────────────────────────────
+
+def test_group_subtasks_four_groups():
+    """Groups are returned in sorted group-number order."""
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 4, "group": 4, "description": "d"},
+        {"id": 1, "group": 1, "description": "a"},
+        {"id": 3, "group": 3, "description": "c"},
+        {"id": 2, "group": 2, "description": "b"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert len(groups) == 4
+    assert [g[0]["description"] for g in groups] == ["a", "b", "c", "d"]
+
+
+# ── score_confidence: missing score key uses default ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_score_confidence_missing_score_key_returns_default():
+    """If API response has no 'score' key, .get() returns 0.7 as default."""
+    payload = '{"reason": "no score here"}'
+    client = _fake_client_returning(payload)
+    planner = TaskPlanner(client=client, memory=MagicMock())
+    score = await planner.score_confidence("task", "response")
+    assert score == pytest.approx(0.7)
+
+
+# ── ab_test: scores are returned in the result dict ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_ab_test_result_dict_contains_all_fields():
+    """ab_test returns the full result dict from the API."""
+    payload = '{"winner":"A","score_a":0.95,"score_b":0.45,"reason":"A is more detailed"}'
+    client = _fake_client_returning(payload)
+    mem = _fake_memory()
+    planner = TaskPlanner(client=client, memory=mem)
+    winner, result = await planner.ab_test("task", "A resp", "B resp")
+    assert winner == "A"
+    assert "score_a" in result
+    assert "score_b" in result
+    assert result["score_a"] == pytest.approx(0.95)
+
+
+# ── group_subtasks: subtasks with group=0 ────────────────────────────────────
+
+def test_group_subtasks_group_zero_is_first():
+    """Group 0 comes before group 1 in sorted order."""
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 1, "group": 1, "description": "b"},
+        {"id": 2, "group": 0, "description": "a"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert groups[0][0]["description"] == "a"
+    assert groups[1][0]["description"] == "b"
+
+
+# ── group_subtasks: two subtasks in same group ───────────────────────────────
+
+def test_group_subtasks_preserves_order_within_group():
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 1, "group": 1, "description": "first"},
+        {"id": 2, "group": 1, "description": "second"},
+        {"id": 3, "group": 1, "description": "third"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert len(groups) == 1
+    descs = [t["description"] for t in groups[0]]
+    assert descs == ["first", "second", "third"]
+
+
+# ── decompose: API error falls back to single subtask ────────────────────────
+
+@pytest.mark.asyncio
+async def test_decompose_api_exception_returns_single_subtask():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("network down"))
+    planner = TaskPlanner(client=client, memory=MagicMock())
+    out = await planner.decompose("my complex task")
+    assert len(out) == 1
+    assert out[0]["description"] == "my complex task"
+    assert out[0]["id"] == 1
+    assert out[0]["group"] == 1
+
+
+# ── score_confidence: code fence JSON format ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_score_confidence_code_fence_json_prefix():
+    """Response with ```json ... ``` fence is parsed correctly."""
+    payload = '```json\n{"score": 0.88, "reason": "good"}\n```'
+    client = _fake_client_returning(payload)
+    planner = TaskPlanner(client=client, memory=MagicMock())
+    score = await planner.score_confidence("task", "response")
+    assert score == pytest.approx(0.88)
+
+
+# ── ab_test: code fence JSON format ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_ab_test_code_fence_json_prefix():
+    """ab_test parses result from ```json ... ``` fence."""
+    payload = '```json\n{"winner":"B","score_a":0.3,"score_b":0.7,"reason":"B better"}\n```'
+    client = _fake_client_returning(payload)
+    mem = _fake_memory()
+    planner = TaskPlanner(client=client, memory=mem)
+    winner, result = await planner.ab_test("task", "A resp", "B resp")
+    assert winner == "B"
+
+
+# ── TaskPlanner initialization ────────────────────────────────────────────────
+
+def test_task_planner_stores_client_and_memory():
+    client = MagicMock()
+    memory = MagicMock()
+    planner = TaskPlanner(client=client, memory=memory)
+    assert planner.client is client
+    assert planner.memory is memory
+
+
+# ── decompose: requires_decomposition=false returns single item ───────────────
+
+@pytest.mark.asyncio
+async def test_decompose_requires_decomposition_false():
+    client = AsyncMock()
+    memory = MagicMock()
+    planner = TaskPlanner(client=client, memory=memory)
+    client.messages.create.return_value.content[0].text = json.dumps(
+        {"requires_decomposition": False, "subtasks": []}
+    )
+    result = await planner.decompose("simple task")
+    assert len(result) == 1
+    assert result[0]["description"] == "simple task"
+
+
+@pytest.mark.asyncio
+async def test_decompose_subtasks_key_present_and_requires_true():
+    client = AsyncMock()
+    memory = MagicMock()
+    planner = TaskPlanner(client=client, memory=memory)
+    subtasks = [
+        {"id": 1, "group": 1, "description": "step one"},
+        {"id": 2, "group": 2, "description": "step two"},
+    ]
+    client.messages.create.return_value.content[0].text = json.dumps(
+        {"requires_decomposition": True, "subtasks": subtasks}
+    )
+    result = await planner.decompose("complex task")
+    assert len(result) == 2
+    assert result[0]["description"] == "step one"
+
+
+# ── score_confidence: result is between 0 and 1 ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_score_confidence_result_in_range():
+    client = AsyncMock()
+    memory = MagicMock()
+    planner = TaskPlanner(client=client, memory=memory)
+    client.messages.create.return_value.content[0].text = json.dumps({"score": 0.9, "reason": "good"})
+    score = await planner.score_confidence("task", "response")
+    assert 0.0 <= score <= 1.0
+
+
+# ── ab_test: cached path returns cached winner immediately ────────────────────
+
+@pytest.mark.asyncio
+async def test_ab_test_cached_short_circuits():
+    client = AsyncMock()
+    memory = MagicMock()
+    memory.get_ab_winner.return_value = "B"
+    planner = TaskPlanner(client=client, memory=memory)
+    winner, detail = await planner.ab_test("task", "resp_a", "resp_b")
+    assert winner == "B"
+    assert detail == {}
+    client.messages.create.assert_not_called()
+
+
+# ── ab_test: task_hash is deterministic 12-char hex ──────────────────────────
+
+def test_ab_test_task_hash_is_deterministic():
+    import hashlib
+    task = "what is 2+2?"
+    h1 = hashlib.sha256(task.encode()).hexdigest()[:12]
+    h2 = hashlib.sha256(task.encode()).hexdigest()[:12]
+    assert h1 == h2
+    assert len(h1) == 12
+    assert all(c in "0123456789abcdef" for c in h1)
+
+
+# ── group_subtasks: returns list ordered by group key ────────────────────────
+
+def test_group_subtasks_ordered_keys():
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 3, "group": 3, "description": "c"},
+        {"id": 1, "group": 1, "description": "a"},
+        {"id": 2, "group": 2, "description": "b"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert groups[0][0]["description"] == "a"
+    assert groups[1][0]["description"] == "b"
+    assert groups[2][0]["description"] == "c"
+
+
+def test_group_subtasks_two_items_in_same_group():
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 1, "group": 1, "description": "x"},
+        {"id": 2, "group": 1, "description": "y"},
+        {"id": 3, "group": 2, "description": "z"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert len(groups) == 2
+    assert len(groups[0]) == 2
+    assert len(groups[1]) == 1
+
+
+# ── module-level prompts are non-empty strings ────────────────────────────────
+
+def test_decompose_prompt_is_non_empty():
+    from jarvis.planner import _DECOMPOSE_PROMPT
+    assert isinstance(_DECOMPOSE_PROMPT, str)
+    assert len(_DECOMPOSE_PROMPT) > 20
+
+
+def test_confidence_prompt_mentions_score():
+    from jarvis.planner import _CONFIDENCE_PROMPT
+    assert "score" in _CONFIDENCE_PROMPT.lower()
+
+
+def test_ab_judge_prompt_mentions_winner():
+    from jarvis.planner import _AB_JUDGE_PROMPT
+    assert "winner" in _AB_JUDGE_PROMPT.lower()

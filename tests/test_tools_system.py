@@ -244,3 +244,102 @@ def test_package_installer_register_tools_populates_registry():
     assert registry.get("install_package") is not None
     assert registry.get("list_packages") is not None
     assert registry.get("check_package") is not None
+
+
+# ── subagent_tools: _get_pool behaviour ──────────────────────────────────────
+
+def test_get_pool_returns_none_when_no_jarvis():
+    subagent_tools._pool = None
+    pool = subagent_tools._get_pool()
+    assert pool is None
+
+
+def test_get_pool_returns_existing_pool():
+    mock_pool = MagicMock()
+    subagent_tools._pool = mock_pool
+    pool = subagent_tools._get_pool()
+    assert pool is mock_pool
+    subagent_tools._pool = None
+
+
+# ── package_installer: _list_installed with filter no match ──────────────────
+
+def test_list_installed_filter_no_match():
+    mock_result = MagicMock(returncode=0, stdout="pip     23.0\nsetuptools  67.0\n")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _list_installed(filter_str="totally_not_here_xyz")
+    assert out == "No matching packages."
+
+
+def test_install_package_no_upgrade_flag_by_default():
+    mock_result = MagicMock(returncode=0, stdout="", stderr="")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result) as mock_run:
+        _install_package("foo")
+    args = mock_run.call_args[0][0]
+    assert "--upgrade" not in args
+
+
+def test_check_package_generic_exception():
+    with patch("jarvis.tools.package_installer.subprocess.run",
+               side_effect=OSError("permission denied")):
+        out = _check_package("secretpkg")
+    assert "error" in out.lower()
+
+
+def test_install_package_failure_contains_stderr():
+    mock_result = MagicMock(returncode=1, stdout="", stderr="No matching distribution found")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _install_package("bad_pkg_xyz")
+    assert "No matching distribution" in out or "failed" in out.lower()
+
+
+# ── _install_package: upgrade flag appended ──────────────────────────────────
+
+def test_install_package_upgrade_flag_appended():
+    mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result) as mock_run:
+        _install_package("foo", upgrade=True)
+    args = mock_run.call_args[0][0]
+    assert "--upgrade" in args
+
+
+def test_install_package_timeout_returns_timed_out():
+    import subprocess
+    with patch("jarvis.tools.package_installer.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="pip", timeout=120)):
+        out = _install_package("slowpkg")
+    assert "timed out" in out.lower()
+
+
+# ── _list_installed: returns matching lines ──────────────────────────────────
+
+def test_list_installed_returns_filtered_match():
+    mock_result = MagicMock(returncode=0, stdout="numpy 1.26\npandas 2.0\nrequests 2.31", stderr="")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _list_installed(filter_str="numpy")
+    assert "numpy" in out
+    assert "pandas" not in out
+
+
+def test_list_installed_no_filter_returns_all():
+    mock_result = MagicMock(returncode=0, stdout="numpy 1.26\npandas 2.0", stderr="")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _list_installed()
+    assert "numpy" in out
+    assert "pandas" in out
+
+
+# ── _check_package: installed package returns version info ───────────────────
+
+def test_check_package_installed_returns_show_output():
+    mock_result = MagicMock(returncode=0, stdout="Name: numpy\nVersion: 1.26.0", stderr="")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _check_package("numpy")
+    assert "1.26.0" in out
+
+
+def test_check_package_not_installed_message():
+    mock_result = MagicMock(returncode=1, stdout="", stderr="not found")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _check_package("ghostpkg")
+    assert "not installed" in out.lower()

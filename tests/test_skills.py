@@ -287,3 +287,224 @@ def test_summary_counts_correctly(registry):
     summary = registry.summary()
     assert "3 skills" in summary
     assert "2 auto-generated" in summary
+
+
+# ── SkillRegistry.increment_usage edge cases ─────────────────────────────────
+
+def test_increment_usage_nonexistent_skill_is_silent(registry):
+    """increment_usage on a name not in _skills should not raise."""
+    registry.increment_usage("does_not_exist")  # should not raise
+
+
+def test_increment_usage_increments_count(registry):
+    """increment_usage bumps usage_count by 1 each call."""
+    from jarvis.skills.registry import Skill
+    registry.register(Skill("counter", "d", "p"))
+    assert registry.get("counter").usage_count == 0
+    registry.increment_usage("counter")
+    assert registry.get("counter").usage_count == 1
+    registry.increment_usage("counter")
+    assert registry.get("counter").usage_count == 2
+
+
+# ── SkillRegistry persistence: generated skills are saved but builtins are not ─
+
+def test_generated_skill_persisted_on_register(tmp_path, monkeypatch):
+    """Generated skills are written to the JSON persist file."""
+    from jarvis.config import cfg
+    from jarvis.skills.registry import Skill, SkillRegistry
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    reg = SkillRegistry()
+    reg.register(Skill("gen_skill", "gen desc", "gen prompt", created_by="generated"))
+    persist = tmp_path / "skills.json"
+    assert persist.exists()
+    data = json.loads(persist.read_text())
+    assert "gen_skill" in data
+
+
+def test_builtin_skill_not_persisted(tmp_path, monkeypatch):
+    """Builtin skills are NOT written to the JSON persist file."""
+    from jarvis.config import cfg
+    from jarvis.skills.registry import Skill, SkillRegistry
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    reg = SkillRegistry()
+    reg.register(Skill("builtin_tool", "desc", "prompt", created_by="builtin"))
+    persist = tmp_path / "skills.json"
+    if persist.exists():
+        data = json.loads(persist.read_text())
+        assert "builtin_tool" not in data
+
+
+# ── SkillRegistry._load: persisted skills survive reload ─────────────────────
+
+def test_persisted_generated_skill_loads_on_new_registry(tmp_path, monkeypatch):
+    """Generated skills saved on one SkillRegistry instance load on a fresh one."""
+    from jarvis.config import cfg
+    from jarvis.skills.registry import Skill, SkillRegistry
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    r1 = SkillRegistry()
+    r1.register(Skill("persistent_gen", "desc", "prompt", created_by="generated"))
+
+    r2 = SkillRegistry()
+    assert r2.get("persistent_gen") is not None
+
+
+# ── SkillRegistry.search empty query returns all ─────────────────────────────
+
+def test_search_empty_query_returns_all(registry):
+    """Empty query string matches everything (all fields contain '')."""
+    from jarvis.skills.registry import Skill
+    registry.register(Skill("alpha", "desc a", "p"))
+    registry.register(Skill("beta", "desc b", "p"))
+    results = registry.search("")
+    names = [s.name for s in results]
+    assert "alpha" in names
+    assert "beta" in names
+
+
+# ── Skill.from_dict roundtrip for user-created skill ─────────────────────────
+
+def test_skill_from_dict_user_created():
+    """from_dict works with created_by='user'."""
+    from jarvis.skills.registry import Skill
+    d = {
+        "name": "user_skill",
+        "description": "user desc",
+        "system_prompt": "user prompt",
+        "tags": ["custom"],
+        "usage_count": 5,
+        "created_by": "user",
+    }
+    skill = Skill.from_dict(d)
+    assert skill.created_by == "user"
+
+
+# ── SkillRegistry.summary() generated count ───────────────────────────────────
+
+def test_summary_generated_count_zero_when_only_builtins(registry):
+    """summary() shows 0 auto-generated when only builtin skills are registered."""
+    registry.register(Skill("bi", "desc", "prompt", created_by="builtin"))
+    s = registry.summary()
+    assert "0" in s
+
+
+def test_summary_generated_count_one_after_generated_skill(registry):
+    """summary() shows 1 auto-generated after registering a generated skill."""
+    registry.register(Skill("gen_one", "desc", "prompt", created_by="generated"))
+    s = registry.summary()
+    assert "1" in s
+
+
+def test_summary_user_skill_not_counted_as_generated(registry):
+    """User-created skills are not counted as auto-generated in summary()."""
+    registry.register(Skill("user_skill", "desc", "prompt", created_by="user"))
+    s = registry.summary()
+    # 0 auto-generated
+    assert "(0 auto-generated)" in s
+
+
+def test_summary_total_includes_all_skill_types(registry):
+    """summary() total count includes builtin, generated, and user skills."""
+    registry.register(Skill("b", "d", "p", created_by="builtin"))
+    registry.register(Skill("g", "d", "p", created_by="generated"))
+    registry.register(Skill("u", "d", "p", created_by="user"))
+    s = registry.summary()
+    assert "3 skills" in s
+
+
+# ── Skill.tags default to empty list ─────────────────────────────────────────
+
+def test_skill_tags_default_to_empty_list():
+    skill = Skill("no_tags", "description", "prompt")
+    assert skill.tags == []
+
+
+def test_skill_tags_are_searchable(registry):
+    """Search finds a skill by its tag."""
+    registry.register(Skill("tagged_skill", "some desc", "some prompt", tags=["mlops", "ai"]))
+    results = registry.search("mlops")
+    assert any(s.name == "tagged_skill" for s in results)
+
+
+# ── Skill.to_dict / from_dict round-trip ──────────────────────────────────────
+
+def test_skill_to_dict_contains_all_keys():
+    s = Skill("x", "desc", "prompt", tags=["a"], usage_count=3, created_by="user")
+    d = s.to_dict()
+    for k in ("name", "description", "system_prompt", "tags", "usage_count", "created_by"):
+        assert k in d
+
+
+def test_skill_from_dict_round_trips():
+    s = Skill("rnd", "round trip", "prompt_rnd", tags=["t1"], usage_count=5)
+    d = s.to_dict()
+    s2 = Skill.from_dict(d)
+    assert s2.name == s.name
+    assert s2.usage_count == s.usage_count
+    assert s2.tags == s.tags
+
+
+def test_skill_from_dict_created_by_user():
+    s = Skill.from_dict({"name": "u", "description": "d", "system_prompt": "p",
+                         "tags": [], "usage_count": 0, "created_by": "user"})
+    assert s.created_by == "user"
+
+
+# ── SkillRegistry.top() ──────────────────────────────────────────────────────
+
+def test_top_returns_n_most_used(registry):
+    for i, name in enumerate(("a", "b", "c", "d")):
+        s = Skill(name, "d", "p", usage_count=i)
+        registry._skills[name] = s
+    top = registry.top(2)
+    assert len(top) == 2
+    assert top[0].usage_count >= top[1].usage_count
+
+
+def test_top_empty_registry_returns_empty(registry):
+    assert registry.top(5) == []
+
+
+def test_top_n_larger_than_registry_returns_all(registry):
+    registry.register(Skill("only_one", "d", "p"))
+    top = registry.top(100)
+    assert len(top) == 1
+
+
+# ── SkillRegistry.summary() format ───────────────────────────────────────────
+
+def test_summary_format_contains_skills_word(registry):
+    assert "skills" in registry.summary()
+
+
+def test_summary_generated_after_auto_created_skill(registry):
+    registry._skills["gen"] = Skill("gen", "d", "p", created_by="generated")
+    assert "1 auto-generated" in registry.summary()
+
+
+# ── SkillRegistry.auto_create success path ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_auto_create_success(registry):
+    client = AsyncMock()
+    client.messages.create.return_value.content[0].text = json.dumps({
+        "name": "new_skill",
+        "description": "does something",
+        "tags": ["ai"],
+        "system_prompt": "Be excellent.",
+    })
+    skill = await registry.auto_create("something new", client)
+    assert skill is not None
+    assert skill.name == "new_skill"
+    assert skill.created_by == "generated"
+    assert registry.get("new_skill") is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_create_api_error_returns_none(registry, capsys):
+    client = AsyncMock()
+    client.messages.create.side_effect = RuntimeError("api down")
+    skill = await registry.auto_create("failing task", client)
+    assert skill is None
+    out = capsys.readouterr().out
+    assert "Auto-create failed" in out

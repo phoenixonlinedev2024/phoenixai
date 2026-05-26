@@ -236,3 +236,114 @@ def test_read_spreadsheet_non_existent_file_returns_error(tmp_path):
     result = _read_spreadsheet(str(tmp_path / "missing.xlsx"))
     # Either an error message or "openpyxl not installed" — both indicate failure
     assert "error" in result.lower() or "not installed" in result.lower()
+
+
+# ── _read_csv: max_rows boundary ──────────────────────────────────────────────
+
+def test_read_csv_exactly_at_max_rows(tmp_path):
+    """Row at index max_rows is not included."""
+    p = tmp_path / "exact.csv"
+    p.write_text("\n".join(f"row{i}" for i in range(5)))
+    result = _read_csv(str(p), max_rows=3)
+    rows = json.loads(result)
+    assert len(rows) == 3
+
+
+def test_read_csv_max_rows_larger_than_file(tmp_path):
+    """max_rows bigger than the file returns all rows."""
+    p = tmp_path / "small.csv"
+    p.write_text("a,b\n1,2\n3,4\n")
+    result = _read_csv(str(p), max_rows=100)
+    rows = json.loads(result)
+    assert len(rows) == 3  # header + 2 data rows
+
+
+# ── _write_spreadsheet xlsx: exception path ────────────────────────────────────
+
+def test_write_spreadsheet_xlsx_exception(monkeypatch, tmp_path):
+    """Write error when openpyxl raises on save."""
+    import sys
+    fake_openpyxl = MagicMock()
+    fake_wb = MagicMock()
+    fake_wb.active = MagicMock()
+    fake_wb.save.side_effect = IOError("disk full")
+    fake_openpyxl.Workbook.return_value = fake_wb
+    with patch.dict(sys.modules, {"openpyxl": fake_openpyxl}):
+        result = _write_spreadsheet(str(tmp_path / "out.xlsx"), [[1, 2], [3, 4]])
+    assert "Write error" in result
+
+
+# ── _read_csv: file-not-found error path ──────────────────────────────────────
+
+def test_read_csv_missing_file_returns_error(tmp_path):
+    result = _read_csv(str(tmp_path / "nonexistent.csv"))
+    assert "CSV read error" in result
+
+
+# ── _read_spreadsheet with explicit sheet name ────────────────────────────────
+
+def test_read_spreadsheet_explicit_sheet(monkeypatch):
+    """When sheet= is specified, wb[sheet] is accessed."""
+    import sys
+    fake_ws = MagicMock()
+    fake_ws.iter_rows = MagicMock(return_value=[])
+    fake_wb = MagicMock()
+    fake_wb.__getitem__ = MagicMock(return_value=fake_ws)
+    fake_wb.active = MagicMock()
+    fake_openpyxl = MagicMock()
+    fake_openpyxl.load_workbook = MagicMock(return_value=fake_wb)
+    with patch.dict(sys.modules, {"openpyxl": fake_openpyxl}):
+        result = _read_spreadsheet("/fake.xlsx", sheet="MySheet")
+    fake_wb.__getitem__.assert_called_once_with("MySheet")
+
+
+# ── _write_spreadsheet: response includes row count ───────────────────────────
+
+def test_write_spreadsheet_csv_response_includes_row_count(tmp_path):
+    p = tmp_path / "out.csv"
+    data = [["a", "b"], ["1", "2"], ["3", "4"], ["5", "6"]]
+    result = _write_spreadsheet(str(p), data)
+    assert "4" in result
+
+
+def test_write_spreadsheet_csv_content_is_correct(tmp_path):
+    p = tmp_path / "content.csv"
+    data = [["name", "score"], ["Alice", "100"]]
+    _write_spreadsheet(str(p), data)
+    text = p.read_text()
+    assert "Alice" in text
+    assert "100" in text
+
+
+# ── _list_sheets: no openpyxl ─────────────────────────────────────────────────
+
+def test_list_sheets_no_openpyxl(monkeypatch):
+    with patch.dict(sys.modules, {"openpyxl": None}):
+        result = _list_sheets("/fake.xlsx")
+    assert "Error" in result or "error" in result.lower()
+
+
+# ── _read_csv: result is parseable JSON ───────────────────────────────────────
+
+def test_read_csv_result_is_json(tmp_path):
+    p = tmp_path / "j.csv"
+    p.write_text("x,y\n1,2\n")
+    result = _read_csv(str(p))
+    data = json.loads(result)
+    assert isinstance(data, list)
+
+
+# ── _read_spreadsheet: xlsx max_rows limits output ───────────────────────────
+
+def test_read_spreadsheet_xlsx_max_rows_limits_output(monkeypatch):
+    rows_returned = [[(i, None)] for i in range(20)]
+    fake_ws = MagicMock()
+    fake_ws.iter_rows = MagicMock(return_value=[(i,) for i in range(20)])
+    fake_wb = MagicMock()
+    fake_wb.active = fake_ws
+    fake_openpyxl = MagicMock()
+    fake_openpyxl.load_workbook = MagicMock(return_value=fake_wb)
+    with patch.dict(sys.modules, {"openpyxl": fake_openpyxl}):
+        result = _read_spreadsheet("/fake.xlsx", max_rows=5)
+    rows = json.loads(result)
+    assert len(rows) <= 5

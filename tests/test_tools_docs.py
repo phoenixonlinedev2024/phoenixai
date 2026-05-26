@@ -194,3 +194,185 @@ def test_read_spreadsheet_xlsx_max_rows_break(monkeypatch):
 
     rows = json.loads(result)
     assert len(rows) == 2
+
+
+# ── _parse_pages: commas and ranges combined ──────────────────────────────────
+
+def test_parse_pages_out_of_range_page_filtered():
+    """Pages beyond total are silently dropped."""
+    result = _parse_pages("1,100", 5)  # page 100 is beyond total=5
+    assert 0 in result  # page 1 becomes index 0
+    assert 99 not in result  # page 100 index is out of range
+
+
+def test_parse_pages_range_clamped_to_total():
+    """Range end is clamped to total."""
+    result = _parse_pages("1-20", 5)  # only 5 pages
+    assert result == [0, 1, 2, 3, 4]
+
+
+# ── _read_pdf: truncates at 10000 chars ──────────────────────────────────────
+
+def test_read_pdf_truncates_long_content():
+    """_read_pdf caps output at 10000 chars."""
+    from jarvis.tools.pdf_tools import _read_pdf
+    fake_page = MagicMock()
+    fake_page.extract_text.return_value = "x" * 12000
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__ = MagicMock(return_value=fake_pdf)
+    fake_pdf.__exit__ = MagicMock(return_value=False)
+    fake_pdf.pages = [fake_page]
+    fake_pdfplumber = MagicMock()
+    fake_pdfplumber.open.return_value = fake_pdf
+    with patch.dict(sys.modules, {"pdfplumber": fake_pdfplumber}):
+        out = _read_pdf("/tmp/test.pdf")
+    assert len(out) == 10000
+
+
+# ── _extract_pdf_tables: truncates at 5000 chars ─────────────────────────────
+
+def test_extract_pdf_tables_truncates_long_output():
+    """_extract_pdf_tables caps output at 5000 chars."""
+    import json as _json
+    from jarvis.tools.pdf_tools import _extract_pdf_tables
+    # Create a big table that will produce >5000 chars of JSON
+    big_table = [["cell" * 10] * 20] * 30
+    fake_page = MagicMock()
+    fake_page.extract_tables.return_value = big_table
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__ = MagicMock(return_value=fake_pdf)
+    fake_pdf.__exit__ = MagicMock(return_value=False)
+    fake_pdf.pages = [fake_page]
+    fake_pdfplumber = MagicMock()
+    fake_pdfplumber.open.return_value = fake_pdf
+    with patch.dict(sys.modules, {"pdfplumber": fake_pdfplumber}):
+        out = _extract_pdf_tables("/tmp/test.pdf")
+    assert len(out) <= 5000
+
+
+# ── _pdf_metadata: empty metadata dict ───────────────────────────────────────
+
+def test_pdf_metadata_empty_metadata():
+    """When metadata is None/empty, only pages key is returned."""
+    import json as _json
+    from jarvis.tools.pdf_tools import _pdf_metadata
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__ = MagicMock(return_value=fake_pdf)
+    fake_pdf.__exit__ = MagicMock(return_value=False)
+    fake_pdf.metadata = {}
+    fake_pdf.pages = [MagicMock()]
+    fake_pdfplumber = MagicMock()
+    fake_pdfplumber.open.return_value = fake_pdf
+    with patch.dict(sys.modules, {"pdfplumber": fake_pdfplumber}):
+        out = _pdf_metadata("/tmp/empty_meta.pdf")
+    data = _json.loads(out)
+    assert data["pages"] == 1
+
+
+# ── _read_pdf import and exception paths ──────────────────────────────────────
+
+def test_read_pdf_missing_pdfplumber(monkeypatch):
+    from jarvis.tools.pdf_tools import _read_pdf
+    with patch.dict(sys.modules, {"pdfplumber": None}):
+        out = _read_pdf("/tmp/test.pdf")
+    assert "pdfplumber" in out and "not installed" in out
+
+
+def test_read_pdf_exception_returns_error_string(monkeypatch):
+    from jarvis.tools.pdf_tools import _read_pdf
+    fake_plumber = MagicMock()
+    fake_plumber.open.side_effect = RuntimeError("file locked")
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _read_pdf("/tmp/test.pdf")
+    assert "PDF read error" in out
+
+
+def test_read_pdf_page_with_no_text():
+    from jarvis.tools.pdf_tools import _read_pdf
+    fake_page = MagicMock()
+    fake_page.extract_text.return_value = None
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__ = MagicMock(return_value=fake_pdf)
+    fake_pdf.__exit__ = MagicMock(return_value=False)
+    fake_pdf.pages = [fake_page]
+    fake_plumber = MagicMock()
+    fake_plumber.open.return_value = fake_pdf
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _read_pdf("/tmp/empty_page.pdf")
+    assert "Page 1" in out
+
+
+# ── _extract_pdf_tables import and exception paths ───────────────────────────
+
+def test_extract_pdf_tables_missing_pdfplumber():
+    from jarvis.tools.pdf_tools import _extract_pdf_tables
+    with patch.dict(sys.modules, {"pdfplumber": None}):
+        out = _extract_pdf_tables("/tmp/test.pdf")
+    assert "pdfplumber" in out and "not installed" in out
+
+
+def test_extract_pdf_tables_no_tables_returns_message():
+    from jarvis.tools.pdf_tools import _extract_pdf_tables
+    fake_page = MagicMock()
+    fake_page.extract_tables.return_value = []
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__ = MagicMock(return_value=fake_pdf)
+    fake_pdf.__exit__ = MagicMock(return_value=False)
+    fake_pdf.pages = [fake_page]
+    fake_plumber = MagicMock()
+    fake_plumber.open.return_value = fake_pdf
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _extract_pdf_tables("/tmp/test.pdf")
+    assert "No tables found" in out
+
+
+def test_extract_pdf_tables_exception_returns_error():
+    from jarvis.tools.pdf_tools import _extract_pdf_tables
+    fake_plumber = MagicMock()
+    fake_plumber.open.side_effect = RuntimeError("bad pdf")
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _extract_pdf_tables("/tmp/test.pdf")
+    assert "Table extraction error" in out
+
+
+# ── _pdf_metadata exception path ─────────────────────────────────────────────
+
+def test_pdf_metadata_exception_returns_error():
+    from jarvis.tools.pdf_tools import _pdf_metadata
+    fake_plumber = MagicMock()
+    fake_plumber.open.side_effect = RuntimeError("corrupted")
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _pdf_metadata("/tmp/bad.pdf")
+    assert "PDF metadata error" in out
+
+
+def test_pdf_metadata_includes_metadata_keys():
+    import json as _json
+    from jarvis.tools.pdf_tools import _pdf_metadata
+    fake_pdf = MagicMock()
+    fake_pdf.__enter__ = MagicMock(return_value=fake_pdf)
+    fake_pdf.__exit__ = MagicMock(return_value=False)
+    fake_pdf.metadata = {"Author": "JARVIS", "Title": "Test Report"}
+    fake_pdf.pages = [MagicMock(), MagicMock()]
+    fake_plumber = MagicMock()
+    fake_plumber.open.return_value = fake_pdf
+    with patch.dict(sys.modules, {"pdfplumber": fake_plumber}):
+        out = _pdf_metadata("/tmp/meta.pdf")
+    data = _json.loads(out)
+    assert data["pages"] == 2
+    assert data["Author"] == "JARVIS"
+    assert data["Title"] == "Test Report"
+
+
+# ── _parse_pages edge cases ────────────────────────────────────────────────────
+
+def test_parse_pages_empty_spec_zero_total():
+    assert _parse_pages("", 0) == []
+
+
+def test_parse_pages_page_one_is_index_zero():
+    assert _parse_pages("1", 5) == [0]
+
+
+def test_parse_pages_last_page_of_small_doc():
+    assert _parse_pages("3", 3) == [2]

@@ -224,3 +224,194 @@ def test_snapshot_histogram_fields_present(reg):
     assert "avg_ms" in h
     assert "p95_ms" in h
     assert "p99_ms" in h
+
+
+def test_time_context_manager_records_on_exception(reg):
+    """time() records the observation even when the body raises."""
+    with pytest.raises(ValueError):
+        with reg.time("op_with_error"):
+            raise ValueError("boom")
+    assert reg.histogram("op_with_error").count == 1
+
+
+async def test_atime_context_manager_records_on_exception(reg):
+    """atime() records the observation even when the body raises."""
+    with pytest.raises(RuntimeError):
+        async with reg.atime("async_op_error"):
+            raise RuntimeError("async boom")
+    assert reg.histogram("async_op_error").count == 1
+
+
+def test_snapshot_timestamp_key_present(reg):
+    """snapshot() dict includes a 'timestamp' ISO string."""
+    snap = reg.snapshot()
+    assert "timestamp" in snap
+    assert "T" in snap["timestamp"]  # ISO format contains 'T'
+
+
+def test_observe_auto_creates_histogram(reg):
+    """observe() on a new metric name creates the histogram automatically."""
+    reg.observe("brand_new_metric", 1.5)
+    assert reg.histogram("brand_new_metric").count == 1
+    assert abs(reg.histogram("brand_new_metric").avg - 1.5) < 1e-9
+
+
+def test_prometheus_text_includes_histogram_count_and_sum(reg):
+    """prometheus_text includes _count and _sum lines for each histogram."""
+    reg.observe("request.latency", 0.2)
+    text = reg.prometheus_text()
+    assert "request_latency_count" in text
+    assert "request_latency_sum" in text
+
+
+# ── Empty registry prometheus text still has uptime ──────────────────────────
+
+def test_prometheus_text_empty_registry_has_uptime(reg):
+    text = reg.prometheus_text()
+    assert "jarvis_uptime_seconds" in text
+
+
+def test_prometheus_text_no_counters_still_shows_uptime(reg):
+    reg.observe("only_histogram", 1.0)
+    text = reg.prometheus_text()
+    assert "jarvis_uptime_seconds" in text
+    assert "jarvis_only_histogram_count" in text
+
+
+# ── snapshot avg_ms conversion ───────────────────────────────────────────────
+
+def test_snapshot_avg_ms_converts_seconds_to_ms(reg):
+    reg.observe("latency", 0.5)
+    snap = reg.snapshot()
+    assert snap["histograms"]["latency"]["avg_ms"] == pytest.approx(500.0)
+
+
+def test_snapshot_sum_ms_converts_correctly(reg):
+    reg.observe("lat2", 0.1)
+    reg.observe("lat2", 0.2)
+    snap = reg.snapshot()
+    assert snap["histograms"]["lat2"]["sum_ms"] == pytest.approx(300.0, abs=1.0)
+
+
+# ── Counter independence ──────────────────────────────────────────────────────
+
+def test_different_counters_are_independent(reg):
+    reg.inc("alpha", 3)
+    reg.inc("beta", 7)
+    assert reg.counter("alpha").value == 3
+    assert reg.counter("beta").value == 7
+
+
+def test_histogram_and_counter_same_name_are_independent(reg):
+    reg.inc("metric", 5)
+    reg.observe("metric", 1.0)
+    assert reg.counter("metric").value == 5
+    assert reg.histogram("metric").count == 1
+
+
+# ── Histogram _max_size exactly at boundary ──────────────────────────────────
+
+def test_histogram_trim_keeps_newest_when_exactly_max_size():
+    from jarvis.observability import Histogram
+    h = Histogram(name="trim_test", _max_size=3)
+    h.observe(1.0)
+    h.observe(2.0)
+    h.observe(3.0)
+    assert h.count == 3
+    h.observe(4.0)
+    assert h.count == 3
+    assert 1.0 not in h.observations
+    assert 4.0 in h.observations
+
+
+# ── Histogram.p95 and p99 ─────────────────────────────────────────────────────
+
+def test_histogram_p95_empty_returns_zero():
+    from jarvis.observability import Histogram
+    h = Histogram(name="p95_empty")
+    assert h.p95 == 0.0
+
+
+def test_histogram_p99_empty_returns_zero():
+    from jarvis.observability import Histogram
+    h = Histogram(name="p99_empty")
+    assert h.p99 == 0.0
+
+
+def test_histogram_p95_single_observation():
+    from jarvis.observability import Histogram
+    h = Histogram(name="p95_single")
+    h.observe(0.5)
+    assert h.p95 == 0.5
+
+
+def test_histogram_p99_ten_observations():
+    from jarvis.observability import Histogram
+    h = Histogram(name="p99_ten")
+    for i in range(1, 11):
+        h.observe(float(i))
+    assert h.p99 == 10.0
+
+
+def test_histogram_total_sums_all_observations():
+    from jarvis.observability import Histogram
+    h = Histogram(name="total_test")
+    h.observe(1.0)
+    h.observe(2.0)
+    h.observe(3.0)
+    assert h.total == 6.0
+
+
+def test_histogram_avg_correct():
+    from jarvis.observability import Histogram
+    h = Histogram(name="avg_test")
+    h.observe(2.0)
+    h.observe(4.0)
+    assert h.avg == 3.0
+
+
+# ── MetricsRegistry.log_snapshot writes to file ───────────────────────────────
+
+def test_log_snapshot_creates_file(tmp_path, monkeypatch):
+    import json
+    from jarvis.observability import MetricsRegistry
+    monkeypatch.setattr("jarvis.config.cfg.LOGS_DIR", tmp_path / "logs")
+    reg = MetricsRegistry()
+    reg.inc("api.calls", 5)
+    reg.log_snapshot()
+    log_file = tmp_path / "logs" / "metrics.jsonl"
+    assert log_file.exists()
+    data = json.loads(log_file.read_text().strip())
+    assert data["counters"]["api.calls"] == 5
+
+
+def test_log_snapshot_appends_multiple():
+    import json, tempfile, pathlib
+    from jarvis.observability import MetricsRegistry
+    with tempfile.TemporaryDirectory() as tmp:
+        import unittest.mock as mock
+        reg = MetricsRegistry()
+        with mock.patch("jarvis.config.cfg.LOGS_DIR", pathlib.Path(tmp)):
+            reg.log_snapshot()
+            reg.log_snapshot()
+        lines = (pathlib.Path(tmp) / "metrics.jsonl").read_text().strip().splitlines()
+        assert len(lines) == 2
+
+
+# ── MetricsRegistry: counter and histogram stay independent ──────────────────
+
+def test_counter_value_after_multiple_incs():
+    from jarvis.observability import MetricsRegistry
+    reg = MetricsRegistry()
+    reg.inc("hits", 3)
+    reg.inc("hits", 7)
+    assert reg.counter("hits").value == 10
+
+
+def test_multiple_histograms_are_independent():
+    from jarvis.observability import MetricsRegistry
+    reg = MetricsRegistry()
+    reg.observe("latency_a", 0.1)
+    reg.observe("latency_b", 0.2)
+    assert reg.histogram("latency_a").count == 1
+    assert reg.histogram("latency_b").count == 1
