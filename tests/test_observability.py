@@ -262,3 +262,63 @@ def test_prometheus_text_includes_histogram_count_and_sum(reg):
     text = reg.prometheus_text()
     assert "request_latency_count" in text
     assert "request_latency_sum" in text
+
+
+# ── Empty registry prometheus text still has uptime ──────────────────────────
+
+def test_prometheus_text_empty_registry_has_uptime(reg):
+    text = reg.prometheus_text()
+    assert "jarvis_uptime_seconds" in text
+
+
+def test_prometheus_text_no_counters_still_shows_uptime(reg):
+    reg.observe("only_histogram", 1.0)
+    text = reg.prometheus_text()
+    assert "jarvis_uptime_seconds" in text
+    assert "jarvis_only_histogram_count" in text
+
+
+# ── snapshot avg_ms conversion ───────────────────────────────────────────────
+
+def test_snapshot_avg_ms_converts_seconds_to_ms(reg):
+    reg.observe("latency", 0.5)
+    snap = reg.snapshot()
+    assert snap["histograms"]["latency"]["avg_ms"] == pytest.approx(500.0)
+
+
+def test_snapshot_sum_ms_converts_correctly(reg):
+    reg.observe("lat2", 0.1)
+    reg.observe("lat2", 0.2)
+    snap = reg.snapshot()
+    assert snap["histograms"]["lat2"]["sum_ms"] == pytest.approx(300.0, abs=1.0)
+
+
+# ── Counter independence ──────────────────────────────────────────────────────
+
+def test_different_counters_are_independent(reg):
+    reg.inc("alpha", 3)
+    reg.inc("beta", 7)
+    assert reg.counter("alpha").value == 3
+    assert reg.counter("beta").value == 7
+
+
+def test_histogram_and_counter_same_name_are_independent(reg):
+    reg.inc("metric", 5)
+    reg.observe("metric", 1.0)
+    assert reg.counter("metric").value == 5
+    assert reg.histogram("metric").count == 1
+
+
+# ── Histogram _max_size exactly at boundary ──────────────────────────────────
+
+def test_histogram_trim_keeps_newest_when_exactly_max_size():
+    from jarvis.observability import Histogram
+    h = Histogram(name="trim_test", _max_size=3)
+    h.observe(1.0)
+    h.observe(2.0)
+    h.observe(3.0)
+    assert h.count == 3
+    h.observe(4.0)
+    assert h.count == 3
+    assert 1.0 not in h.observations
+    assert 4.0 in h.observations

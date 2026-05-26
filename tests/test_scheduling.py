@@ -659,3 +659,82 @@ async def test_task_queue_pending_increments_on_enqueue():
     assert queue.pending == 1
     await queue.enqueue(noop, "t2", Priority.HIGH)
     assert queue.pending == 2
+
+
+# ── NLScheduler.remove returns True/False ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_remove_returns_true_when_found():
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    job = await sched.add("rem_job", "every day", "daily task")
+    result = sched.remove(job.id)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_remove_returns_false_for_unknown_id():
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    result = sched.remove("nonexistent_job_id")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_list_jobs_sorted_by_priority_descending():
+    from jarvis.scheduling import NLScheduler, Priority
+    sched = NLScheduler(_fake_jarvis())
+    await sched.add("low_job", "every day", "low", priority=Priority.LOW)
+    await sched.add("high_job", "every day", "high", priority=Priority.HIGH)
+    await sched.add("normal_job", "every day", "normal", priority=Priority.NORMAL)
+    jobs = sched.list_jobs()
+    priorities = [j["priority"] for j in jobs]
+    assert priorities[0] == "HIGH"
+    assert priorities[-1] == "LOW"
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_list_jobs_tag_filter_no_match():
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    await sched.add("tagged_job", "every hour", "prompt", tags=["finance"])
+    jobs = sched.list_jobs(tag="nonexistent_tag")
+    assert jobs == []
+
+
+# ── ScheduledJob fields and to_dict completeness ─────────────────────────────
+
+def test_scheduled_job_error_count_default_zero():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    assert job.error_count == 0
+
+
+def test_scheduled_job_to_dict_includes_error_count():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    job.error_count = 5
+    d = job.to_dict()
+    assert d["error_count"] == 5
+
+
+def test_scheduled_job_to_dict_includes_tags_list():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob(tags=["web", "daily"])
+    d = job.to_dict()
+    assert d["tags"] == ["web", "daily"]
+
+
+def test_scheduled_job_to_dict_run_count():
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    job.run_count = 7
+    d = job.to_dict()
+    assert d["run_count"] == 7
+
+
+# ── Priority values ───────────────────────────────────────────────────────────
+
+def test_priority_critical_is_highest():
+    from jarvis.scheduling import Priority
+    assert Priority.CRITICAL > Priority.HIGH > Priority.NORMAL > Priority.LOW

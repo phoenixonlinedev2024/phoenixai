@@ -567,3 +567,87 @@ def test_sign_and_verify_round_trip():
     sig = sign_payload("test_payload", "my_secret_key")
     assert verify_signature("test_payload", sig, "my_secret_key") is True
     assert verify_signature("other_payload", sig, "my_secret_key") is False
+
+
+# ── sign_payload is deterministic ────────────────────────────────────────────
+
+def test_sign_payload_is_deterministic():
+    from jarvis.security import sign_payload
+    sig1 = sign_payload("hello", "secret")
+    sig2 = sign_payload("hello", "secret")
+    assert sig1 == sig2
+
+
+def test_sign_payload_different_secret_gives_different_sig():
+    from jarvis.security import sign_payload
+    sig1 = sign_payload("payload", "secret_a")
+    sig2 = sign_payload("payload", "secret_b")
+    assert sig1 != sig2
+
+
+# ── ApiKey.to_dict key_prefix truncation ─────────────────────────────────────
+
+def test_api_key_to_dict_key_prefix_is_first_8_chars_plus_dots(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "k.json")
+    raw = ks.generate(name="prefix_test")
+    key = ks.validate(raw)
+    d = key.to_dict()
+    assert d["key_prefix"] == raw[:8] + "..."
+
+
+def test_api_key_to_dict_does_not_expose_full_key(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "k2.json")
+    raw = ks.generate(name="leak_test")
+    key = ks.validate(raw)
+    d = key.to_dict()
+    assert raw not in str(d)
+
+
+# ── KeyStore persistence — reload preserves attributes ───────────────────────
+
+def test_keystore_reload_preserves_role_and_name(tmp_path):
+    from jarvis.security import KeyStore
+    path = tmp_path / "reload.json"
+    ks1 = KeyStore(path=path)
+    raw = ks1.generate(name="myapp", role="admin")
+    ks1.validate(raw)
+
+    ks2 = KeyStore(path=path)
+    key = ks2.validate(raw)
+    assert key is not None
+    assert key.role == "admin"
+    assert key.name == "myapp"
+    assert key.calls == 2
+
+
+def test_keystore_reload_preserves_calls_count(tmp_path):
+    from jarvis.security import KeyStore
+    path = tmp_path / "calls.json"
+    ks1 = KeyStore(path=path)
+    raw = ks1.generate(name="counter")
+    for _ in range(4):
+        ks1.validate(raw)
+
+    ks2 = KeyStore(path=path)
+    key = ks2.validate(raw)
+    assert key.calls == 5
+
+
+# ── RateLimiter limit=1 edge case ────────────────────────────────────────────
+
+def test_rate_limiter_limit_one_second_call_blocked():
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(limit=1, window=60)
+    assert rl.is_allowed("u") is True
+    assert rl.is_allowed("u") is False
+
+
+def test_rate_limiter_different_identifiers_independent():
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(limit=1, window=60)
+    assert rl.is_allowed("alice") is True
+    assert rl.is_allowed("bob") is True
+    assert rl.is_allowed("alice") is False
+    assert rl.is_allowed("bob") is False

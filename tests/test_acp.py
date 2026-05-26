@@ -495,3 +495,61 @@ async def test_publish_sync_in_running_loop_enqueues_message(bus):
     h = bus.history(topic="sync.topic")
     assert len(h) >= 1
     assert h[0]["payload"] == "sync_value"
+
+
+# ── MessageBus.topics() ──────────────────────────────────────────────────────
+
+def test_topics_empty_on_new_bus(bus):
+    assert bus.topics() == []
+
+
+def test_topics_returns_subscribed_topics(bus):
+    async def h(msg): pass
+    bus.subscribe("t1", h)
+    bus.subscribe("t2", h)
+    topics = bus.topics()
+    assert "t1" in topics
+    assert "t2" in topics
+
+
+# ── ACPMessage to_dict keys ───────────────────────────────────────────────────
+
+def test_acp_message_to_dict_contains_five_keys():
+    msg = ACPMessage(topic="hello", payload=42)
+    d = msg.to_dict()
+    assert set(d.keys()) == {"id", "topic", "payload", "sender", "timestamp"}
+
+
+def test_acp_message_to_dict_payload_preserved():
+    data = {"result": 100, "ok": True}
+    msg = ACPMessage(topic="result", payload=data)
+    assert msg.to_dict()["payload"] == data
+
+
+def test_acp_message_to_dict_topic_preserved():
+    msg = ACPMessage(topic="my.special.topic")
+    assert msg.to_dict()["topic"] == "my.special.topic"
+
+
+# ── MessageBus history _max_history trim ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_bus_history_trims_to_max_history():
+    from jarvis.acp import MessageBus
+    small_bus = MessageBus()
+    small_bus._max_history = 5
+    for i in range(8):
+        await small_bus.publish("events", payload=i)
+    assert len(small_bus._history) == 5
+    assert small_bus._history[0].payload == 3
+
+
+# ── stats subscribers dict ────────────────────────────────────────────────────
+
+def test_stats_subscribers_dict_has_correct_counts(bus):
+    async def h1(msg): pass
+    async def h2(msg): pass
+    bus.subscribe("ch", h1)
+    bus.subscribe("ch", h2)
+    stats = bus.stats()
+    assert stats["subscribers"]["ch"] == 2

@@ -683,3 +683,65 @@ def test_search_facts_case_insensitive_match(memory_store):
     # Both should return the fact (LIKE in SQLite is case-insensitive for ASCII)
     assert any(r["key"] == "FavoriteColor" for r in results_upper) or \
            any(r["key"] == "FavoriteColor" for r in results_lower)
+
+
+# ── get_history ordering ──────────────────────────────────────────────────────
+
+def test_get_history_returns_in_chronological_order(memory_store):
+    memory_store.save_message("sess", "user", "first")
+    memory_store.save_message("sess", "assistant", "second")
+    memory_store.save_message("sess", "user", "third")
+    history = memory_store.get_history("sess", limit=10)
+    assert history[0]["content"] == "first"
+    assert history[1]["content"] == "second"
+    assert history[2]["content"] == "third"
+
+
+def test_get_history_respects_limit(memory_store):
+    for i in range(10):
+        memory_store.save_message("limit_sess", "user", f"msg{i}")
+    history = memory_store.get_history("limit_sess", limit=3)
+    assert len(history) == 3
+    assert history[-1]["content"] == "msg9"
+
+
+def test_get_history_role_preserved(memory_store):
+    memory_store.save_message("roles", "user", "hi")
+    memory_store.save_message("roles", "assistant", "hello")
+    history = memory_store.get_history("roles")
+    roles = [m["role"] for m in history]
+    assert roles == ["user", "assistant"]
+
+
+# ── log_gap context field is stored ──────────────────────────────────────────
+
+def test_log_gap_stores_context(memory_store):
+    memory_store.log_gap("need pdf OCR", context="user tried to read scanned PDF")
+    gaps = memory_store.get_open_gaps()
+    assert any(g["context"] == "user tried to read scanned PDF" for g in gaps)
+
+
+def test_log_gap_without_context_defaults_to_empty(memory_store):
+    memory_store.log_gap("missing feature")
+    gaps = memory_store.get_open_gaps()
+    assert any(g["description"] == "missing feature" for g in gaps)
+
+
+# ── resolve_gap marks gap as resolved ────────────────────────────────────────
+
+def test_resolve_gap_reduces_open_gap_count(memory_store):
+    memory_store.log_gap("gap one")
+    memory_store.log_gap("gap two")
+    before = memory_store.get_open_gaps()
+    gap_id = before[-1]["id"]
+    memory_store.resolve_gap(gap_id)
+    after = memory_store.get_open_gaps()
+    assert len(after) == len(before) - 1
+
+
+# ── store_lesson with context ─────────────────────────────────────────────────
+
+def test_store_lesson_content_retrievable(memory_store):
+    memory_store.store_lesson("Always check edge cases", context="unit test session")
+    lessons = memory_store.get_lessons(limit=5)
+    assert "Always check edge cases" in lessons
