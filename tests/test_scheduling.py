@@ -601,3 +601,61 @@ async def test_nl_scheduler_run_now_success_updates_run_count():
     assert result == "done!"
     assert job.run_count == 1
     assert job.last_status == "success"
+
+
+# ── NLScheduler.list_jobs() empty scheduler ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_list_jobs_empty_scheduler_returns_empty():
+    """list_jobs() on a fresh NLScheduler returns []."""
+    from jarvis.scheduling import NLScheduler
+    sched = NLScheduler(_fake_jarvis())
+    assert sched.list_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_nl_scheduler_list_jobs_no_tag_filter_returns_all():
+    """list_jobs() with no tag filter returns all jobs."""
+    from jarvis.scheduling import NLScheduler, Priority
+    sched = NLScheduler(_fake_jarvis())
+    await sched.add("job1", "every hour", "prompt1", tags=["web"])
+    await sched.add("job2", "every day", "prompt2", tags=["email"])
+    jobs = sched.list_jobs()
+    assert len(jobs) == 2
+
+
+# ── ScheduledJob.to_dict() with non-None last_run / last_status ───────────────
+
+def test_scheduled_job_to_dict_with_last_run_and_status():
+    """last_run and last_status appear in to_dict() when set."""
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob(name="j", cron="* * * * *", prompt="do thing")
+    job.last_run = "2024-01-01T00:00:00+00:00"
+    job.last_status = "success"
+    d = job.to_dict()
+    assert d["last_run"] == "2024-01-01T00:00:00+00:00"
+    assert d["last_status"] == "success"
+
+
+def test_scheduled_job_to_dict_null_last_run_by_default():
+    """A new ScheduledJob has last_run and last_status as None in to_dict()."""
+    from jarvis.scheduling import ScheduledJob
+    job = ScheduledJob()
+    d = job.to_dict()
+    assert d["last_run"] is None
+    assert d["last_status"] is None
+
+
+# ── TaskQueue.pending tracks enqueued items ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_task_queue_pending_increments_on_enqueue():
+    """pending count grows with each enqueued task."""
+    from jarvis.scheduling import TaskQueue, Priority
+    queue = TaskQueue()
+    assert queue.pending == 0
+    async def noop(): pass
+    await queue.enqueue(noop, "t1", Priority.NORMAL)
+    assert queue.pending == 1
+    await queue.enqueue(noop, "t2", Priority.HIGH)
+    assert queue.pending == 2

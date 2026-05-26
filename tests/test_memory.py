@@ -630,3 +630,56 @@ def test_store_lesson_context_stored(memory_store):
     with memory_store._conn() as conn:
         row = conn.execute("SELECT context FROM lessons").fetchone()
     assert row["context"] == "test context"
+
+
+# ── summary() exact format string ────────────────────────────────────────────
+
+def test_summary_format_includes_all_labels(memory_store):
+    """summary() output contains all six entity labels."""
+    s = memory_store.summary()
+    assert "facts" in s
+    assert "lessons" in s
+    assert "skills" in s
+    assert "scheduled tasks" in s
+    assert "open gaps" in s
+    assert "monitors" in s
+
+
+def test_summary_format_starts_with_memory_prefix(memory_store):
+    """summary() starts with 'Memory:'."""
+    s = memory_store.summary()
+    assert s.startswith("Memory:")
+
+
+def test_summary_reflects_scheduled_task_count(memory_store):
+    """summary() reflects scheduled task count when a task is added."""
+    memory_store.add_scheduled_task("daily_report", "0 8 * * *", "generate report")
+    s = memory_store.summary()
+    assert "1" in s
+
+
+def test_record_skill_use_increments_usage_on_same_skill(memory_store):
+    """record_skill_use on the same skill increments usage_count correctly."""
+    memory_store.record_skill_use("search", "web search", success=True)
+    memory_store.record_skill_use("search", "web search", success=True)
+    memory_store.record_skill_use("search", "web search", success=True)
+    with memory_store._conn() as conn:
+        row = conn.execute("SELECT usage_count FROM skills WHERE name='search'").fetchone()
+    assert row["usage_count"] == 3
+
+
+def test_store_fact_with_list_value(memory_store):
+    """store_fact serialises a list value; recall_fact returns it as a list."""
+    memory_store.store_fact("tags", ["python", "ai", "jarvis"])
+    result = memory_store.recall_fact("tags")
+    assert result == ["python", "ai", "jarvis"]
+
+
+def test_search_facts_case_insensitive_match(memory_store):
+    """search_facts matches keys and values case-insensitively via LIKE."""
+    memory_store.store_fact("FavoriteColor", "Blue")
+    results_upper = memory_store.search_facts("FAVORITECOLOR")
+    results_lower = memory_store.search_facts("favoritecolor")
+    # Both should return the fact (LIKE in SQLite is case-insensitive for ASCII)
+    assert any(r["key"] == "FavoriteColor" for r in results_upper) or \
+           any(r["key"] == "FavoriteColor" for r in results_lower)

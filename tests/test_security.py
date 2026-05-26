@@ -503,3 +503,67 @@ async def test_middleware_valid_key_passes_through(tmp_path):
         mw = SecurityMiddleware(inner, ks, rl)
         await mw(scope, AsyncMock(), AsyncMock())
     inner.assert_awaited_once()
+
+
+# ── RateLimiter.remaining() edge cases ────────────────────────────────────────
+
+def test_rate_limiter_remaining_full_for_new_client():
+    """remaining() returns full limit for a client that hasn't made any requests."""
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(limit=50, window=60)
+    assert rl.remaining("brand_new_client") == 50
+
+
+def test_rate_limiter_remaining_decrements_with_each_request():
+    """remaining() decrements by 1 for each allowed request."""
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(limit=5, window=60)
+    rl.is_allowed("client_x")
+    rl.is_allowed("client_x")
+    assert rl.remaining("client_x") == 3
+
+
+# ── KeyStore.has_any() transitions ───────────────────────────────────────────
+
+def test_key_store_has_any_false_when_empty(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "empty.json")
+    assert ks.has_any() is False
+
+
+def test_key_store_has_any_true_after_generate(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "ks.json")
+    ks.generate(name="first_key")
+    assert ks.has_any() is True
+
+
+def test_key_store_has_any_false_after_all_revoked(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "ks2.json")
+    raw = ks.generate(name="only_key")
+    assert ks.has_any() is True
+    ks.revoke(raw)
+    assert ks.has_any() is False
+
+
+# ── ApiKey.to_dict() includes calls count ────────────────────────────────────
+
+def test_api_key_to_dict_calls_increments(tmp_path):
+    """to_dict() reflects calls count after validate() increments it."""
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "ks3.json")
+    raw = ks.generate(name="call_test")
+    ks.validate(raw)
+    ks.validate(raw)
+    key = ks.validate(raw)
+    assert key.calls == 3
+
+
+# ── sign_payload + verify_signature round-trip ───────────────────────────────
+
+def test_sign_and_verify_round_trip():
+    from jarvis.security import sign_payload, verify_signature
+    sig = sign_payload("test_payload", "my_secret_key")
+    assert verify_signature("test_payload", sig, "my_secret_key") is True
+    assert verify_signature("other_payload", sig, "my_secret_key") is False

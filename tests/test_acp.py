@@ -443,3 +443,55 @@ async def test_subscribe_same_handler_twice_receives_twice(bus):
     bus.subscribe("dupe", h)
     await bus.publish("dupe", payload="x")
     assert len(received) == 2
+
+
+# ── ACPMessage.timestamp is ISO format ───────────────────────────────────────
+
+def test_acp_message_timestamp_is_iso_format():
+    """ACPMessage.timestamp is an ISO-format UTC datetime string."""
+    msg = ACPMessage(topic="test")
+    ts = msg.timestamp
+    assert "T" in ts
+    assert "+" in ts or "Z" in ts or ts.endswith("+00:00")
+
+
+# ── bus.stats() grows with topics ────────────────────────────────────────────
+
+def test_stats_topic_count_grows_with_subscriptions(bus):
+    """stats() topic count increases as new topics are subscribed."""
+    async def h(msg): pass
+    assert bus.stats()["topics"] == 0
+    bus.subscribe("alpha", h)
+    assert bus.stats()["topics"] == 1
+    bus.subscribe("beta", h)
+    assert bus.stats()["topics"] == 2
+
+
+@pytest.mark.asyncio
+async def test_stats_history_size_grows_with_publishes(bus):
+    """stats() history_size grows by 1 for each published message."""
+    assert bus.stats()["history_size"] == 0
+    await bus.publish("events", payload="first")
+    assert bus.stats()["history_size"] == 1
+    await bus.publish("events", payload="second")
+    assert bus.stats()["history_size"] == 2
+
+
+# ── ACPMessage default sender ─────────────────────────────────────────────────
+
+def test_acp_message_default_sender_is_jarvis():
+    """ACPMessage.sender defaults to 'jarvis'."""
+    msg = ACPMessage(topic="t")
+    assert msg.sender == "jarvis"
+
+
+# ── publish_sync with running loop enqueues task ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_publish_sync_in_running_loop_enqueues_message(bus):
+    """publish_sync() creates a task when a loop is running."""
+    bus.publish_sync("sync.topic", payload="sync_value")
+    await asyncio.sleep(0)  # let the task run
+    h = bus.history(topic="sync.topic")
+    assert len(h) >= 1
+    assert h[0]["payload"] == "sync_value"

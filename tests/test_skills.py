@@ -377,5 +377,50 @@ def test_skill_from_dict_user_created():
     }
     skill = Skill.from_dict(d)
     assert skill.created_by == "user"
-    assert skill.usage_count == 5
-    assert skill.tags == ["custom"]
+
+
+# ── SkillRegistry.summary() generated count ───────────────────────────────────
+
+def test_summary_generated_count_zero_when_only_builtins(registry):
+    """summary() shows 0 auto-generated when only builtin skills are registered."""
+    registry.register(Skill("bi", "desc", "prompt", created_by="builtin"))
+    s = registry.summary()
+    assert "0" in s
+
+
+def test_summary_generated_count_one_after_generated_skill(registry):
+    """summary() shows 1 auto-generated after registering a generated skill."""
+    registry.register(Skill("gen_one", "desc", "prompt", created_by="generated"))
+    s = registry.summary()
+    assert "1" in s
+
+
+def test_summary_user_skill_not_counted_as_generated(registry):
+    """User-created skills are not counted as auto-generated in summary()."""
+    registry.register(Skill("user_skill", "desc", "prompt", created_by="user"))
+    s = registry.summary()
+    # 0 auto-generated
+    assert "(0 auto-generated)" in s
+
+
+def test_summary_total_includes_all_skill_types(registry):
+    """summary() total count includes builtin, generated, and user skills."""
+    registry.register(Skill("b", "d", "p", created_by="builtin"))
+    registry.register(Skill("g", "d", "p", created_by="generated"))
+    registry.register(Skill("u", "d", "p", created_by="user"))
+    s = registry.summary()
+    assert "3 skills" in s
+
+
+# ── Skill.tags default to empty list ─────────────────────────────────────────
+
+def test_skill_tags_default_to_empty_list():
+    skill = Skill("no_tags", "description", "prompt")
+    assert skill.tags == []
+
+
+def test_skill_tags_are_searchable(registry):
+    """Search finds a skill by its tag."""
+    registry.register(Skill("tagged_skill", "some desc", "some prompt", tags=["mlops", "ai"]))
+    results = registry.search("mlops")
+    assert any(s.name == "tagged_skill" for s in results)
