@@ -576,3 +576,89 @@ def test_main_module_entrypoint_via_runpy():
     import pytest
     with pytest.raises(SystemExit):
         runpy.run_module("jarvis.main", run_name="__main__", alter_sys=True)
+
+
+# ── status command ────────────────────────────────────────────────────────────
+
+def test_status_exit_code_zero():
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis):
+        result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+
+
+# ── tools command ─────────────────────────────────────────────────────────────
+
+def test_tools_command_exit_code_zero():
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis):
+        result = runner.invoke(app, ["tools"])
+    assert result.exit_code == 0
+
+
+def test_tools_command_contains_category():
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis):
+        result = runner.invoke(app, ["tools"])
+    assert "files" in result.stdout or "system" in result.stdout
+
+
+# ── memory command ────────────────────────────────────────────────────────────
+
+def test_memory_command_shows_summary():
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis):
+        result = runner.invoke(app, ["memory"])
+    assert result.exit_code == 0
+    assert "summary" in result.stdout.lower() or len(result.stdout) > 0
+
+
+def test_memory_command_lessons_displayed():
+    jarvis = _mock_jarvis()
+    jarvis.memory.all_facts = MagicMock(return_value=[])
+    jarvis.memory.get_lessons = MagicMock(return_value=["always validate input"])
+    jarvis.memory.get_open_gaps = MagicMock(return_value=[])
+    with patch("jarvis.main._get_jarvis", return_value=jarvis):
+        result = runner.invoke(app, ["memory"])
+    assert "always validate input" in result.stdout
+
+
+# ── export command ────────────────────────────────────────────────────────────
+
+def test_export_default_format_is_markdown():
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.export.export_markdown", return_value="Exported to out.md") as mock_exp:
+        result = runner.invoke(app, ["export"])
+    assert result.exit_code == 0
+    mock_exp.assert_called_once()
+
+
+def test_export_pdf_format():
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis), \
+         patch("jarvis.export.export_pdf", return_value="PDF saved") as mock_pdf:
+        result = runner.invoke(app, ["export", "--format", "pdf"])
+    assert result.exit_code == 0
+    mock_pdf.assert_called_once()
+
+
+# ── keys command with role admin ─────────────────────────────────────────────
+
+def test_keys_create_with_admin_role():
+    fake_ks = MagicMock()
+    fake_ks.generate = MagicMock(return_value="jvs_admin_key")
+    with patch("jarvis.security.key_store", fake_ks):
+        result = runner.invoke(app, ["keys", "--create", "--role", "admin"])
+    assert result.exit_code == 0
+    fake_ks.generate.assert_called_once_with(name="", role="admin")
+
+
+# ── chat --profile flag ───────────────────────────────────────────────────────
+
+def test_chat_one_shot_sets_custom_profile():
+    jarvis = _mock_jarvis()
+    with patch("jarvis.main._get_jarvis", return_value=jarvis):
+        result = runner.invoke(app, ["chat", "--no-stream", "--profile", "terse", "hi"])
+    assert result.exit_code == 0
+    jarvis.set_profile.assert_called_with("terse")

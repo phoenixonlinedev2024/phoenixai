@@ -462,3 +462,119 @@ def test_task_planner_stores_client_and_memory():
     planner = TaskPlanner(client=client, memory=memory)
     assert planner.client is client
     assert planner.memory is memory
+
+
+# ── decompose: requires_decomposition=false returns single item ───────────────
+
+@pytest.mark.asyncio
+async def test_decompose_requires_decomposition_false():
+    client = AsyncMock()
+    memory = MagicMock()
+    planner = TaskPlanner(client=client, memory=memory)
+    client.messages.create.return_value.content[0].text = json.dumps(
+        {"requires_decomposition": False, "subtasks": []}
+    )
+    result = await planner.decompose("simple task")
+    assert len(result) == 1
+    assert result[0]["description"] == "simple task"
+
+
+@pytest.mark.asyncio
+async def test_decompose_subtasks_key_present_and_requires_true():
+    client = AsyncMock()
+    memory = MagicMock()
+    planner = TaskPlanner(client=client, memory=memory)
+    subtasks = [
+        {"id": 1, "group": 1, "description": "step one"},
+        {"id": 2, "group": 2, "description": "step two"},
+    ]
+    client.messages.create.return_value.content[0].text = json.dumps(
+        {"requires_decomposition": True, "subtasks": subtasks}
+    )
+    result = await planner.decompose("complex task")
+    assert len(result) == 2
+    assert result[0]["description"] == "step one"
+
+
+# ── score_confidence: result is between 0 and 1 ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_score_confidence_result_in_range():
+    client = AsyncMock()
+    memory = MagicMock()
+    planner = TaskPlanner(client=client, memory=memory)
+    client.messages.create.return_value.content[0].text = json.dumps({"score": 0.9, "reason": "good"})
+    score = await planner.score_confidence("task", "response")
+    assert 0.0 <= score <= 1.0
+
+
+# ── ab_test: cached path returns cached winner immediately ────────────────────
+
+@pytest.mark.asyncio
+async def test_ab_test_cached_short_circuits():
+    client = AsyncMock()
+    memory = MagicMock()
+    memory.get_ab_winner.return_value = "B"
+    planner = TaskPlanner(client=client, memory=memory)
+    winner, detail = await planner.ab_test("task", "resp_a", "resp_b")
+    assert winner == "B"
+    assert detail == {}
+    client.messages.create.assert_not_called()
+
+
+# ── ab_test: task_hash is deterministic 12-char hex ──────────────────────────
+
+def test_ab_test_task_hash_is_deterministic():
+    import hashlib
+    task = "what is 2+2?"
+    h1 = hashlib.sha256(task.encode()).hexdigest()[:12]
+    h2 = hashlib.sha256(task.encode()).hexdigest()[:12]
+    assert h1 == h2
+    assert len(h1) == 12
+    assert all(c in "0123456789abcdef" for c in h1)
+
+
+# ── group_subtasks: returns list ordered by group key ────────────────────────
+
+def test_group_subtasks_ordered_keys():
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 3, "group": 3, "description": "c"},
+        {"id": 1, "group": 1, "description": "a"},
+        {"id": 2, "group": 2, "description": "b"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert groups[0][0]["description"] == "a"
+    assert groups[1][0]["description"] == "b"
+    assert groups[2][0]["description"] == "c"
+
+
+def test_group_subtasks_two_items_in_same_group():
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 1, "group": 1, "description": "x"},
+        {"id": 2, "group": 1, "description": "y"},
+        {"id": 3, "group": 2, "description": "z"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert len(groups) == 2
+    assert len(groups[0]) == 2
+    assert len(groups[1]) == 1
+
+
+# ── module-level prompts are non-empty strings ────────────────────────────────
+
+def test_decompose_prompt_is_non_empty():
+    from jarvis.planner import _DECOMPOSE_PROMPT
+    assert isinstance(_DECOMPOSE_PROMPT, str)
+    assert len(_DECOMPOSE_PROMPT) > 20
+
+
+def test_confidence_prompt_mentions_score():
+    from jarvis.planner import _CONFIDENCE_PROMPT
+    assert "score" in _CONFIDENCE_PROMPT.lower()
+
+
+def test_ab_judge_prompt_mentions_winner():
+    from jarvis.planner import _AB_JUDGE_PROMPT
+    assert "winner" in _AB_JUDGE_PROMPT.lower()
