@@ -249,3 +249,69 @@ def test_get_system_prompt_gap_and_memory_both_included():
     assert "OCR tool" in prompt
     assert "Your Current Memory" in prompt
     assert "Capability Gaps" in prompt
+
+
+# ── voice_mode addendum ───────────────────────────────────────────────────────
+
+def test_get_system_prompt_voice_mode_adds_addendum():
+    prompt = get_system_prompt(voice_mode=True)
+    assert "Voice Mode Active" in prompt
+
+
+def test_get_system_prompt_voice_mode_false_no_addendum():
+    prompt = get_system_prompt(voice_mode=False)
+    assert "Voice Mode Active" not in prompt
+
+
+def test_get_system_prompt_voice_mode_with_profile():
+    prompt = get_system_prompt(profile="terse", voice_mode=True)
+    assert "Terse" in prompt
+    assert "Voice Mode Active" in prompt
+
+
+# ── specific profile content ──────────────────────────────────────────────────
+
+def test_professional_profile_mentions_formal():
+    assert "formal" in PERSONALITY_PROFILES["professional"].lower()
+
+
+def test_casual_profile_mentions_friendly():
+    assert "friendly" in PERSONALITY_PROFILES["casual"].lower()
+
+
+def test_terse_profile_mentions_few_words():
+    assert "few words" in PERSONALITY_PROFILES["terse"].lower()
+
+
+def test_verbose_profile_mentions_detail():
+    assert "detail" in PERSONALITY_PROFILES["verbose"].lower()
+
+
+# ── template formatting ───────────────────────────────────────────────────────
+
+def test_capability_template_formats_name():
+    msg = JARVIS_CAPABILITY_CREATED_TEMPLATE.format(name="csv_parser")
+    assert "csv_parser" in msg
+
+
+def test_learning_template_formats_count():
+    msg = JARVIS_LEARNING_TEMPLATE.format(count=3)
+    assert "3" in msg
+
+
+def test_learning_template_has_insight_word():
+    assert "insight" in JARVIS_LEARNING_TEMPLATE
+
+
+# ── base identity contents ────────────────────────────────────────────────────
+
+def test_default_profile_mentions_jarvis():
+    assert "JARVIS" in PERSONALITY_PROFILES["default"]
+
+
+def test_default_profile_longer_than_100_chars():
+    assert len(PERSONALITY_PROFILES["default"]) > 100
+
+
+def test_voice_intro_ends_with_question_mark_or_period():
+    assert JARVIS_VOICE_INTRO.endswith("?") or JARVIS_VOICE_INTRO.endswith(".")
