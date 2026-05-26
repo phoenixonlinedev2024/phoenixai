@@ -466,7 +466,9 @@ def test_generate_image_hf_saves_file_on_success(tmp_path, monkeypatch):
     fake_resp = MagicMock()
     fake_resp.status_code = 200
     fake_resp.content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-    with patch("requests.post", return_value=fake_resp):
+    fake_requests = MagicMock()
+    fake_requests.post.return_value = fake_resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
         out = _generate_image_hf("a cat", output_path=output_path)
     assert Path(output_path).exists()
     assert "saved to" in out

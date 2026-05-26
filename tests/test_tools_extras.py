@@ -385,31 +385,41 @@ from jarvis.tools.geo_weather_tools import (  # noqa: E402
 )
 
 
+def _fake_requests(get_mock):
+    fake = MagicMock()
+    fake.get = get_mock
+    return fake
+
+
 def test_geocode_no_results():
-    with patch("requests.get") as mock_get:
-        mock_get.return_value.json.return_value = []
+    get_mock = MagicMock()
+    get_mock.return_value.json.return_value = []
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
         out = _geocode("nowhere special")
     assert "No results" in out
 
 
 def test_geocode_returns_lat_lon():
     result = [{"display_name": "London, UK", "lat": "51.5", "lon": "-0.1"}]
-    with patch("requests.get") as mock_get:
-        mock_get.return_value.json.return_value = result
+    get_mock = MagicMock()
+    get_mock.return_value.json.return_value = result
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
         out = _geocode("London")
     assert "lat:51.5" in out
     assert "lon:-0.1" in out
 
 
 def test_geocode_exception_returns_error():
-    with patch("requests.get", side_effect=Exception("network down")):
+    get_mock = MagicMock(side_effect=Exception("network down"))
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
         out = _geocode("anywhere")
     assert "Geocode error" in out
 
 
 def test_get_weather_location_not_found():
-    with patch("requests.get") as mock_get:
-        mock_get.return_value.json.return_value = []
+    get_mock = MagicMock()
+    get_mock.return_value.json.return_value = []
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
         out = _get_weather("UnknownCity")
     assert "Location not found" in out
 
@@ -422,15 +432,17 @@ def test_get_weather_returns_lines():
         "temperature_2m_min": [14.0],
         "precipitation_sum": [0.5],
     }
-    with patch("requests.get") as mock_get:
-        mock_get.return_value.json.side_effect = [geo, {"daily": daily}]
+    get_mock = MagicMock()
+    get_mock.return_value.json.side_effect = [geo, {"daily": daily}]
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
         out = _get_weather("Paris", days=1)
     assert "Paris, France" in out
     assert "2026-05-26" in out
 
 
 def test_get_weather_exception_returns_error():
-    with patch("requests.get", side_effect=Exception("timeout")):
+    get_mock = MagicMock(side_effect=Exception("timeout"))
+    with patch.dict(sys.modules, {"requests": _fake_requests(get_mock)}):
         out = _get_weather("Paris")
     assert "Weather error" in out
 
@@ -443,9 +455,9 @@ def test_read_rss_no_feedparser_fallback(tmp_path):
     )
     fake_resp = MagicMock()
     fake_resp.text = xml
-    with patch.dict(sys.modules, {"feedparser": None}):
-        with patch("requests.get", return_value=fake_resp):
-            out = _read_rss("http://example.com/feed")
+    get_mock = MagicMock(return_value=fake_resp)
+    with patch.dict(sys.modules, {"feedparser": None, "requests": _fake_requests(get_mock)}):
+        out = _read_rss("http://example.com/feed")
     assert "Hello" in out
 
 

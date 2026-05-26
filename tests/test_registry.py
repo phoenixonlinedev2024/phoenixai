@@ -683,7 +683,7 @@ def test_api_call_text_fallback_non_json():
     fake_requests = MagicMock()
     fake_requests.request.return_value = fake_resp
 
-    with patch("requests.request", fake_requests.request):
+    with patch.dict(sys.modules, {"requests": fake_requests}):
         out = _api_call("https://example.com/endpoint")
     assert "plain text response" in out
 
@@ -730,10 +730,12 @@ def test_web_fetch_http_error_returns_fetch_error():
 
 def test_api_call_put_method():
     """_api_call sends PUT request and returns JSON response."""
-    with patch("requests.request") as mock_req:
-        resp = MagicMock()
-        resp.json.return_value = {"updated": True}
-        mock_req.return_value = resp
+    fake_requests = MagicMock()
+    mock_req = fake_requests.request
+    resp = MagicMock()
+    resp.json.return_value = {"updated": True}
+    mock_req.return_value = resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
         out = _api_call("https://api.example.com/item/1", method="PUT", body={"name": "new"})
     mock_req.assert_called_once()
     call_args = mock_req.call_args
@@ -743,11 +745,13 @@ def test_api_call_put_method():
 
 def test_api_call_custom_headers_forwarded():
     """_api_call passes the headers dict to requests.request."""
-    with patch("requests.request") as mock_req:
-        resp = MagicMock()
-        resp.json.return_value = {}
-        mock_req.return_value = resp
-        custom_headers = {"Authorization": "Bearer token123"}
+    fake_requests = MagicMock()
+    mock_req = fake_requests.request
+    resp = MagicMock()
+    resp.json.return_value = {}
+    mock_req.return_value = resp
+    custom_headers = {"Authorization": "Bearer token123"}
+    with patch.dict(sys.modules, {"requests": fake_requests}):
         _api_call("https://api.example.com/data", headers=custom_headers)
     _, kwargs = mock_req.call_args
     assert kwargs["headers"] == custom_headers
@@ -755,10 +759,12 @@ def test_api_call_custom_headers_forwarded():
 
 def test_api_call_delete_method_returns_json():
     """_api_call sends DELETE request and returns JSON."""
-    with patch("requests.request") as mock_req:
-        resp = MagicMock()
-        resp.json.return_value = {"deleted": True}
-        mock_req.return_value = resp
+    fake_requests = MagicMock()
+    mock_req = fake_requests.request
+    resp = MagicMock()
+    resp.json.return_value = {"deleted": True}
+    mock_req.return_value = resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
         out = _api_call("https://api.example.com/item/99", method="DELETE")
     assert "deleted" in out
     call_method = mock_req.call_args[0][0]
@@ -879,11 +885,13 @@ def test_read_file_not_found_returns_error():
 
 def test_api_call_json_parse_error_returns_text_response():
     """When response is not JSON, _api_call returns resp.text."""
-    with patch("requests.request") as mock_req:
-        resp = MagicMock()
-        resp.json.side_effect = ValueError("not json")
-        resp.text = "plain text response"
-        mock_req.return_value = resp
+    fake_requests = MagicMock()
+    mock_req = fake_requests.request
+    resp = MagicMock()
+    resp.json.side_effect = ValueError("not json")
+    resp.text = "plain text response"
+    mock_req.return_value = resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
         out = _api_call("https://example.com")
     assert "plain text response" in out
 
@@ -1088,7 +1096,9 @@ def test_api_call_returns_json_string():
     fake_resp = MagicMock()
     fake_resp.headers = {"Content-Type": "application/json"}
     fake_resp.json.return_value = {"status": "ok"}
-    with patch("requests.request", return_value=fake_resp):
+    fake_requests = MagicMock()
+    fake_requests.request.return_value = fake_resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
         out = _api_call("https://api.example.com/status")
     assert "status" in out
 
@@ -1096,8 +1106,11 @@ def test_api_call_returns_json_string():
 def test_api_call_returns_text_when_not_json():
     fake_resp = MagicMock()
     fake_resp.headers = {"Content-Type": "text/plain"}
+    fake_resp.json.side_effect = ValueError("not json")
     fake_resp.text = "pong"
-    with patch("requests.request", return_value=fake_resp):
+    fake_requests = MagicMock()
+    fake_requests.request.return_value = fake_resp
+    with patch.dict(sys.modules, {"requests": fake_requests}):
         out = _api_call("https://api.example.com/ping")
     assert "pong" in out
 
