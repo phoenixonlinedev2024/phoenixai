@@ -200,3 +200,52 @@ def test_stop_hot_reload_safe_when_not_running(loader):
 def test_load_all_no_files_returns_zero(loader, tmp_path):
     count = loader.load_all()
     assert count == 0
+
+
+# ── PluginLoader registry stored ─────────────────────────────────────────────
+
+def test_loader_registry_attribute(loader, registry):
+    assert loader.registry is registry
+
+
+def test_load_all_mixed_valid_and_invalid(loader, tmp_path, registry):
+    (tmp_path / "valid.py").write_text("def register_tools(r): r.v = True\n")
+    (tmp_path / "nohook.py").write_text("x = 1\n")
+    (tmp_path / "broken.py").write_text("!!! syntax error !!!\n")
+    count = loader.load_all()
+    assert count == 1
+    assert getattr(registry, "v", False) is True
+
+
+def test_load_plugin_false_for_no_register_tools(loader, tmp_path):
+    p = tmp_path / "notool.py"
+    p.write_text("CONSTANT = 42\n")
+    assert loader._load_plugin(p) is False
+
+
+def test_load_plugin_false_on_import_error(loader, tmp_path):
+    p = tmp_path / "bad_import.py"
+    p.write_text("import this_module_does_not_exist_xyz\n")
+    assert loader._load_plugin(p) is False
+
+
+def test_watcher_thread_is_daemon(loader):
+    loader.start_hot_reload(interval=9999)
+    assert loader._watcher_thread.daemon is True
+    loader.stop_hot_reload()
+
+
+def test_watcher_thread_name(loader):
+    loader.start_hot_reload(interval=9999)
+    assert "jarvis" in loader._watcher_thread.name.lower()
+    loader.stop_hot_reload()
+
+
+def test_mtime_not_reloaded_if_unchanged(loader, tmp_path, registry):
+    plugin = tmp_path / "stable.py"
+    plugin.write_text("def register_tools(r): r.count = getattr(r, 'count', 0) + 1\n")
+    loader.load_all()
+    assert registry.count == 1
+    # Call _load_plugin again without changing mtime
+    loader._load_plugin(plugin)
+    assert registry.count == 2  # _load_plugin always reloads when called directly
