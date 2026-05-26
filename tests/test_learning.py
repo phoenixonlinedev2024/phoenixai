@@ -141,3 +141,75 @@ async def test_reflect_code_fence_without_json_prefix(memory_store, monkeypatch)
     engine = LearningEngine(memory_store)
     result = await engine.reflect([{"role": "user", "content": "x"}], client=client)
     assert result.get("lessons") == ["branch test"]
+
+
+# ── Additional LearningEngine tests ──────────────────────────────────────────
+
+def test_learning_engine_memory_attribute(memory_store):
+    engine = LearningEngine(memory_store)
+    assert engine.memory is memory_store
+
+
+@pytest.mark.asyncio
+async def test_reflect_capability_gaps_returned_in_result(memory_store, monkeypatch):
+    monkeypatch.setattr("jarvis.memory.learning.cfg.LEARNING_ENABLED", True)
+    client = _fake_client_returning(
+        '{"lessons":[],"facts":{},"capability_gaps":["needs PDF tool"]}'
+    )
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "hi"}], client=client)
+    assert "capability_gaps" in result
+    assert result["capability_gaps"] == ["needs PDF tool"]
+
+
+@pytest.mark.asyncio
+async def test_reflect_malformed_json_returns_empty(memory_store, monkeypatch):
+    monkeypatch.setattr("jarvis.memory.learning.cfg.LEARNING_ENABLED", True)
+    client = _fake_client_returning("not valid json at all")
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "x"}], client=client)
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_reflect_lesson_stored_with_session_reflection_context(memory_store, monkeypatch):
+    monkeypatch.setattr("jarvis.memory.learning.cfg.LEARNING_ENABLED", True)
+    client = _fake_client_returning('{"lessons":["important lesson"],"facts":{},"capability_gaps":[]}')
+    engine = LearningEngine(memory_store)
+    await engine.reflect([{"role": "user", "content": "test"}], client=client)
+    with memory_store._conn() as conn:
+        row = conn.execute(
+            "SELECT context FROM lessons WHERE lesson=?", ("important lesson",)
+        ).fetchone()
+    assert row is not None
+    assert row["context"] == "session_reflection"
+
+
+@pytest.mark.asyncio
+async def test_reflect_fact_stored_with_source_reflection(memory_store, monkeypatch):
+    monkeypatch.setattr("jarvis.memory.learning.cfg.LEARNING_ENABLED", True)
+    client = _fake_client_returning('{"lessons":[],"facts":{"pref_theme":"dark"},"capability_gaps":[]}')
+    engine = LearningEngine(memory_store)
+    await engine.reflect([{"role": "user", "content": "test"}], client=client)
+    with memory_store._conn() as conn:
+        row = conn.execute(
+            "SELECT source, confidence FROM facts WHERE key=?", ("pref_theme",)
+        ).fetchone()
+    assert row["source"] == "reflection"
+    assert row["confidence"] == pytest.approx(0.8)
+
+
+def test_build_context_prompt_only_facts_excludes_lessons_header(memory_store):
+    memory_store.store_fact("editor", "emacs")
+    engine = LearningEngine(memory_store)
+    prompt = engine.build_context_prompt()
+    assert "Known Facts" in prompt
+    assert "Lessons Learned" not in prompt
+
+
+def test_build_context_prompt_only_lessons_excludes_facts_header(memory_store):
+    memory_store.store_lesson("always write tests", context="")
+    engine = LearningEngine(memory_store)
+    prompt = engine.build_context_prompt()
+    assert "Lessons Learned" in prompt
+    assert "Known Facts" not in prompt

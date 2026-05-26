@@ -236,3 +236,58 @@ def test_voice_loop_on_transcript_exception(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Error" in out
     loop.close()
+
+
+# ── Additional daemon component tests ────────────────────────────────────────
+
+def test_voice_loop_jarvis_stored_as_attribute():
+    jarvis = _make_jarvis()
+    vl = VoiceLoop(jarvis)
+    assert vl.jarvis is jarvis
+
+
+def test_voice_loop_tts_is_none_initially():
+    vl = VoiceLoop(_make_jarvis())
+    assert vl._tts is None
+
+
+def test_voice_loop_stt_is_none_initially():
+    vl = VoiceLoop(_make_jarvis())
+    assert vl._stt is None
+
+
+def test_scheduler_jarvis_stored_as_attribute():
+    jarvis = _make_jarvis()
+    sched = JarvisScheduler(jarvis)
+    assert sched.jarvis is jarvis
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_reflection_empty_result_is_ok(capsys):
+    jarvis = _make_jarvis()
+    jarvis.learner.reflect = AsyncMock(return_value={})
+    sched = JarvisScheduler(jarvis)
+    await sched._run_reflection()
+    out = capsys.readouterr().out
+    assert "0" in out
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_task_prints_result(capsys):
+    jarvis = _make_jarvis()
+    jarvis.chat = AsyncMock(return_value="All done with the task.")
+    sched = JarvisScheduler(jarvis)
+    await sched._run_task("my-task", "do something")
+    out = capsys.readouterr().out
+    assert "All done" in out
+
+
+def test_scheduler_start_prints_running_message(capsys, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "REFLECTION_INTERVAL_HOURS", 6)
+    jarvis = _make_jarvis()
+    sched = JarvisScheduler(jarvis)
+    monkeypatch.setattr(sched, "_load_tasks", MagicMock())
+    sched.start()
+    out = capsys.readouterr().out
+    assert "Running" in out or "Reflection" in out

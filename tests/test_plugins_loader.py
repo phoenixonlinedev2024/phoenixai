@@ -158,3 +158,45 @@ def test_watch_loop_reloads_changed_plugin(loader, tmp_path, registry):
         assert getattr(registry, "watch_v", 1) == 2
     finally:
         loader.stop_hot_reload()
+
+
+# ── Additional PluginLoader state / count tests ───────────────────────────────
+
+def test_loader_running_is_false_initially(loader):
+    assert loader._running is False
+
+
+def test_loader_watcher_thread_is_none_initially(loader):
+    assert loader._watcher_thread is None
+
+
+def test_loader_mtimes_empty_initially(loader):
+    assert loader._mtimes == {}
+
+
+def test_load_all_two_plugins_returns_count_two(loader, tmp_path, registry):
+    for name in ("alpha", "beta"):
+        (tmp_path / f"{name}.py").write_text(
+            f"def register_tools(r):\n    r.{name} = True\n"
+        )
+    count = loader.load_all()
+    assert count == 2
+    assert getattr(registry, "alpha", False) is True
+    assert getattr(registry, "beta", False) is True
+
+
+def test_load_plugin_returns_true_for_valid_plugin(loader, tmp_path):
+    p = tmp_path / "valid.py"
+    p.write_text("def register_tools(r): r.ok = True\n")
+    assert loader._load_plugin(p) is True
+
+
+def test_stop_hot_reload_safe_when_not_running(loader):
+    assert loader._running is False
+    loader.stop_hot_reload()
+    assert loader._running is False
+
+
+def test_load_all_no_files_returns_zero(loader, tmp_path):
+    count = loader.load_all()
+    assert count == 0
