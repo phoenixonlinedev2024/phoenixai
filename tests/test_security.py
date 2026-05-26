@@ -651,3 +651,77 @@ def test_rate_limiter_different_identifiers_independent():
     assert rl.is_allowed("bob") is True
     assert rl.is_allowed("alice") is False
     assert rl.is_allowed("bob") is False
+
+
+# ── RateLimiter.reset_at returns future time ──────────────────────────────────
+
+def test_rate_limiter_reset_at_no_bucket_returns_future():
+    import time
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(window=60)
+    t = rl.reset_at("new_user")
+    assert t > time.time()
+
+
+def test_rate_limiter_reset_at_after_one_call_is_within_window():
+    import time
+    from jarvis.security import RateLimiter
+    rl = RateLimiter(window=30)
+    rl.is_allowed("x")
+    t = rl.reset_at("x")
+    assert time.time() <= t <= time.time() + 31
+
+
+# ── KeyStore.validate increments calls ────────────────────────────────────────
+
+def test_key_store_validate_increments_calls(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "keys.json")
+    raw = ks.generate(name="counter", role="user")
+    key_obj = ks._keys[raw]
+    ks.validate(raw)
+    ks.validate(raw)
+    assert key_obj.calls == 2
+
+
+def test_key_store_validate_sets_last_used(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "keys.json")
+    raw = ks.generate()
+    assert ks._keys[raw].last_used is None
+    ks.validate(raw)
+    assert ks._keys[raw].last_used is not None
+
+
+def test_key_store_validate_returns_none_for_unknown_key(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "keys.json")
+    result = ks.validate("not_a_real_key")
+    assert result is None
+
+
+# ── ApiKey.created_at is ISO format ──────────────────────────────────────────
+
+def test_api_key_created_at_is_iso_string(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "keys.json")
+    raw = ks.generate()
+    created = ks._keys[raw].created_at
+    assert "T" in created
+    assert created.endswith("+00:00") or "Z" in created or created.endswith("UTC")
+
+
+# ── KeyStore generates jvs_ prefix keys ──────────────────────────────────────
+
+def test_key_store_generate_key_has_jvs_prefix(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "keys.json")
+    raw = ks.generate()
+    assert raw.startswith("jvs_")
+
+
+def test_key_store_generate_keys_are_unique(tmp_path):
+    from jarvis.security import KeyStore
+    ks = KeyStore(path=tmp_path / "keys.json")
+    keys = {ks.generate() for _ in range(5)}
+    assert len(keys) == 5
