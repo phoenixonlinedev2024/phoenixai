@@ -291,3 +291,55 @@ def test_install_package_failure_contains_stderr():
     with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
         out = _install_package("bad_pkg_xyz")
     assert "No matching distribution" in out or "failed" in out.lower()
+
+
+# ── _install_package: upgrade flag appended ──────────────────────────────────
+
+def test_install_package_upgrade_flag_appended():
+    mock_result = MagicMock(returncode=0, stdout="ok", stderr="")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result) as mock_run:
+        _install_package("foo", upgrade=True)
+    args = mock_run.call_args[0][0]
+    assert "--upgrade" in args
+
+
+def test_install_package_timeout_returns_timed_out():
+    import subprocess
+    with patch("jarvis.tools.package_installer.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="pip", timeout=120)):
+        out = _install_package("slowpkg")
+    assert "timed out" in out.lower()
+
+
+# ── _list_installed: returns matching lines ──────────────────────────────────
+
+def test_list_installed_returns_filtered_match():
+    mock_result = MagicMock(returncode=0, stdout="numpy 1.26\npandas 2.0\nrequests 2.31", stderr="")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _list_installed(filter_str="numpy")
+    assert "numpy" in out
+    assert "pandas" not in out
+
+
+def test_list_installed_no_filter_returns_all():
+    mock_result = MagicMock(returncode=0, stdout="numpy 1.26\npandas 2.0", stderr="")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _list_installed()
+    assert "numpy" in out
+    assert "pandas" in out
+
+
+# ── _check_package: installed package returns version info ───────────────────
+
+def test_check_package_installed_returns_show_output():
+    mock_result = MagicMock(returncode=0, stdout="Name: numpy\nVersion: 1.26.0", stderr="")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _check_package("numpy")
+    assert "1.26.0" in out
+
+
+def test_check_package_not_installed_message():
+    mock_result = MagicMock(returncode=1, stdout="", stderr="not found")
+    with patch("jarvis.tools.package_installer.subprocess.run", return_value=mock_result):
+        out = _check_package("ghostpkg")
+    assert "not installed" in out.lower()
