@@ -291,3 +291,57 @@ def test_scheduler_start_prints_running_message(capsys, monkeypatch):
     sched.start()
     out = capsys.readouterr().out
     assert "Running" in out or "Reflection" in out
+
+
+# ── JarvisScheduler additional ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_scheduler_run_task_updates_memory(capsys):
+    jarvis = _make_jarvis()
+    sched = JarvisScheduler(jarvis)
+    await sched._run_task("mem-task", "check things")
+    jarvis.memory.update_task_run.assert_called_once()
+
+
+def test_scheduler_load_tasks_prints_on_success(capsys, monkeypatch):
+    task = {"name": "morning", "cron": "0 9 * * *", "prompt": "good morning"}
+    jarvis = _make_jarvis(scheduled_tasks=[task])
+    sched = JarvisScheduler(jarvis)
+    with patch("jarvis.daemon.CronTrigger") as mock_cron:
+        mock_cron.from_crontab.return_value = MagicMock()
+        sched._load_tasks()
+    out = capsys.readouterr().out
+    assert "morning" in out
+
+
+def test_scheduler_load_multiple_tasks_adds_multiple_jobs(monkeypatch):
+    tasks = [
+        {"name": "task1", "cron": "0 8 * * *", "prompt": "first"},
+        {"name": "task2", "cron": "0 20 * * *", "prompt": "second"},
+    ]
+    jarvis = _make_jarvis(scheduled_tasks=tasks)
+    sched = JarvisScheduler(jarvis)
+    count_before = sched.scheduler.add_job.call_count
+    with patch("jarvis.daemon.CronTrigger") as mock_cron:
+        mock_cron.from_crontab.return_value = MagicMock()
+        sched._load_tasks()
+    assert sched.scheduler.add_job.call_count == count_before + 2
+
+
+# ── VoiceLoop additional ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_scheduler_run_reflection_uses_client():
+    jarvis = _make_jarvis()
+    sched = JarvisScheduler(jarvis)
+    await sched._run_reflection()
+    jarvis.learner.reflect.assert_called_once_with(
+        jarvis._session_transcript, jarvis.client
+    )
+
+
+def test_voice_loop_stop_when_no_stt_does_not_raise():
+    jarvis = _make_jarvis()
+    vl = VoiceLoop(jarvis)
+    vl._stt = None
+    vl.stop()  # should not raise

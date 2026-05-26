@@ -262,3 +262,60 @@ def test_recall_relevant_multiple_types(mem):
     assert "[fact]" in out
     assert "[lesson]" in out
     assert "[conversation]" in out
+
+
+# ── Additional SemanticMemory coverage ───────────────────────────────────────
+
+def test_uid_is_hex_string(mem):
+    uid = mem._uid("hello world")
+    assert all(c in "0123456789abcdef" for c in uid)
+    assert len(uid) == 16
+
+
+def test_store_passes_document_text(mem):
+    mem.store("unique text JARVIS stored here")
+    docs = mem._collection.upsert.call_args.kwargs["documents"]
+    assert "unique text JARVIS stored here" in docs[0]
+
+
+def test_recall_clips_n_to_collection_count(mem):
+    mem._collection.count = MagicMock(return_value=2)
+    mem._collection.query = MagicMock(return_value={
+        "documents": [["a", "b"]],
+        "metadatas": [[{}, {}]],
+        "distances": [[0.1, 0.2]],
+    })
+    mem.recall("q", n=100)
+    n_results_used = mem._collection.query.call_args.kwargs["n_results"]
+    assert n_results_used == 2
+
+
+def test_count_on_fresh_memory_returns_zero():
+    sys.modules.setdefault("chromadb", MagicMock())
+    sys.modules.setdefault("chromadb.config", MagicMock())
+    from jarvis.memory.semantic import SemanticMemory
+    sm = SemanticMemory()
+    sm._collection = None
+    col = MagicMock()
+    col.count = MagicMock(side_effect=RuntimeError("no collection"))
+
+    class FakeChroma:
+        def PersistentClient(self, *a, **kw):
+            raise RuntimeError("no chroma")
+
+    import jarvis.memory.semantic as sem_mod
+    original = sys.modules.get("chromadb")
+    sys.modules["chromadb"] = FakeChroma()
+    result = sm.count()
+    sys.modules["chromadb"] = original
+    assert result == 0
+
+
+def test_recall_relevant_meta_missing_type_uses_memory_fallback(mem):
+    mem._collection = _fake_collection(
+        docs=["something with no type"],
+        metas=[{}],
+        distances=[0.2],
+    )
+    out = mem.recall_relevant("test query")
+    assert "[memory]" in out
