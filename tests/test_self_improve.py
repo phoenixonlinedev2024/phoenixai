@@ -149,3 +149,65 @@ def test_capability_report_structure(mock_jarvis):
     assert "dynamic_tools" in report
     assert "open_gaps" in report
     assert isinstance(report["gap_descriptions"], list)
+
+
+# ── Additional BenchmarkRunner tests ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_case_no_keyword_match_fails(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    runner = BenchmarkRunner(mock_jarvis)
+    case = BenchmarkCase("nomatch", "What is the airspeed velocity?", ["swallow", "african"])
+    result = await runner.run_case(case)
+    assert result.score == 0.0
+    assert result.passed is False
+
+
+def test_benchmark_runner_history_path_is_jsonl(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    runner = BenchmarkRunner(mock_jarvis)
+    assert runner._history_path.suffix == ".jsonl"
+
+
+def test_capability_report_gaps_capped_at_10(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+
+    class FakeMemory:
+        def get_open_gaps(self):
+            return [{"id": i, "description": f"gap {i}"} for i in range(15)]
+
+    class FakeRegistry:
+        def all(self):
+            return []
+
+    class FakeJarvis:
+        memory = FakeMemory()
+        registry = FakeRegistry()
+
+        async def chat(self, prompt):
+            return "resp"
+
+    evolver = CapabilityEvolver(FakeJarvis())
+    report = evolver.capability_report()
+    assert len(report["gap_descriptions"]) <= 10
+    assert report["open_gaps"] == 15
+
+
+@pytest.mark.asyncio
+async def test_run_suite_avg_latency_present(mock_jarvis, tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    runner = BenchmarkRunner(mock_jarvis)
+    summary = await runner.run_suite()
+    assert "avg_latency_s" in summary
+    assert summary["avg_latency_s"] >= 0.0
+
+
+def test_benchmark_case_has_correct_id(mock_jarvis):
+    case = BenchmarkCase("my_id", "prompt", ["keyword"])
+    assert case.id == "my_id"
+    assert case.prompt == "prompt"
+    assert "keyword" in case.expected_keywords

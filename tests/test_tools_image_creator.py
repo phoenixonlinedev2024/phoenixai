@@ -312,3 +312,105 @@ async def test_synthesise_tool_code_fence_without_json_prefix(tmp_path, monkeypa
     tool = await synthesise_tool("no-json-prefix capability", client, reg)
     assert tool is not None
     assert tool.name == "no_json_prefix_tool"
+
+
+# ── Additional image_gen tests ────────────────────────────────────────────────
+
+def test_generate_image_local_success(tmp_path):
+    fake_pipe = MagicMock()
+    fake_image = MagicMock()
+    fake_pipe.return_value.images = [fake_image]
+
+    fake_torch = MagicMock()
+    fake_torch.cuda.is_available.return_value = False
+    fake_torch.float32 = "float32"
+
+    fake_diffusers = MagicMock()
+    fake_diffusers.StableDiffusionPipeline.from_pretrained.return_value = MagicMock()
+    fake_diffusers.StableDiffusionPipeline.from_pretrained.return_value.to.return_value = fake_pipe
+
+    out_path = str(tmp_path / "local.png")
+    with patch.dict(sys.modules, {"diffusers": fake_diffusers, "torch": fake_torch}):
+        out = _generate_image_local("a sunset", output_path=out_path)
+    assert "saved to" in out or "generated" in out.lower()
+
+
+def test_generate_image_local_exception_returns_error():
+    fake_torch = MagicMock()
+    fake_torch.cuda.is_available.return_value = False
+    fake_diffusers = MagicMock()
+    fake_diffusers.StableDiffusionPipeline.from_pretrained.side_effect = RuntimeError("GPU OOM")
+    with patch.dict(sys.modules, {"diffusers": fake_diffusers, "torch": fake_torch}):
+        out = _generate_image_local("test prompt")
+    assert "Local image generation error" in out
+
+
+def test_analyze_image_exception_returns_error():
+    out = _analyze_image("/tmp/definitely_nonexistent_file_xyz.png", "What is this?")
+    assert "Vision analysis error" in out
+
+
+def test_generate_image_hf_no_token_no_auth_header(monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "HF_API_TOKEN", "")
+    call_kwargs = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        call_kwargs["headers"] = headers
+        return MagicMock(status_code=200, content=b"bytes")
+
+    fake_requests = MagicMock()
+    fake_requests.post = fake_post
+    with patch.dict(sys.modules, {"requests": fake_requests}):
+        _generate_image_hf("prompt", output_path="/tmp/x.png")
+    assert "Authorization" not in call_kwargs.get("headers", {})
+
+
+# ── synthesise_tool: dynamic flag and category ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_synthesise_tool_dynamic_flag_is_true(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "TOOLS_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    from jarvis.tools.registry import ToolRegistry
+    reg = ToolRegistry()
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=MagicMock(
+        content=[MagicMock(text=_valid_payload("dynamic_test"))]
+    ))
+    tool = await synthesise_tool("dynamic capability", client, reg)
+    assert tool is not None
+    assert tool.dynamic is True
+
+
+@pytest.mark.asyncio
+async def test_synthesise_tool_category_from_spec(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "TOOLS_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    from jarvis.tools.registry import ToolRegistry
+    reg = ToolRegistry()
+    payload = json.dumps({
+        "name": "cat_tool",
+        "description": "A categorised tool.",
+        "category": "web",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+        "python_code": "def run(**kwargs):\n    return 'ok'",
+    })
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=MagicMock(
+        content=[MagicMock(text=payload)]
+    ))
+    tool = await synthesise_tool("web capability", client, reg)
+    assert tool is not None
+    assert tool.category == "web"
+
+
+# ── _make_fn: returns a callable ──────────────────────────────────────────────
+
+def test_make_fn_returns_callable():
+    code = "def run(**kwargs):\n    return 'callable'"
+    fn = _make_fn(code)
+    assert callable(fn)
+    assert fn() == "callable"
