@@ -295,3 +295,55 @@ def test_read_spreadsheet_explicit_sheet(monkeypatch):
     with patch.dict(sys.modules, {"openpyxl": fake_openpyxl}):
         result = _read_spreadsheet("/fake.xlsx", sheet="MySheet")
     fake_wb.__getitem__.assert_called_once_with("MySheet")
+
+
+# ── _write_spreadsheet: response includes row count ───────────────────────────
+
+def test_write_spreadsheet_csv_response_includes_row_count(tmp_path):
+    p = tmp_path / "out.csv"
+    data = [["a", "b"], ["1", "2"], ["3", "4"], ["5", "6"]]
+    result = _write_spreadsheet(str(p), data)
+    assert "4" in result
+
+
+def test_write_spreadsheet_csv_content_is_correct(tmp_path):
+    p = tmp_path / "content.csv"
+    data = [["name", "score"], ["Alice", "100"]]
+    _write_spreadsheet(str(p), data)
+    text = p.read_text()
+    assert "Alice" in text
+    assert "100" in text
+
+
+# ── _list_sheets: no openpyxl ─────────────────────────────────────────────────
+
+def test_list_sheets_no_openpyxl(monkeypatch):
+    with patch.dict(sys.modules, {"openpyxl": None}):
+        result = _list_sheets("/fake.xlsx")
+    assert "Error" in result or "error" in result.lower()
+
+
+# ── _read_csv: result is parseable JSON ───────────────────────────────────────
+
+def test_read_csv_result_is_json(tmp_path):
+    p = tmp_path / "j.csv"
+    p.write_text("x,y\n1,2\n")
+    result = _read_csv(str(p))
+    data = json.loads(result)
+    assert isinstance(data, list)
+
+
+# ── _read_spreadsheet: xlsx max_rows limits output ───────────────────────────
+
+def test_read_spreadsheet_xlsx_max_rows_limits_output(monkeypatch):
+    rows_returned = [[(i, None)] for i in range(20)]
+    fake_ws = MagicMock()
+    fake_ws.iter_rows = MagicMock(return_value=[(i,) for i in range(20)])
+    fake_wb = MagicMock()
+    fake_wb.active = fake_ws
+    fake_openpyxl = MagicMock()
+    fake_openpyxl.load_workbook = MagicMock(return_value=fake_wb)
+    with patch.dict(sys.modules, {"openpyxl": fake_openpyxl}):
+        result = _read_spreadsheet("/fake.xlsx", max_rows=5)
+    rows = json.loads(result)
+    assert len(rows) <= 5
