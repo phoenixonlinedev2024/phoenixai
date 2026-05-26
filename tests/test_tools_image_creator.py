@@ -414,3 +414,76 @@ def test_make_fn_returns_callable():
     fn = _make_fn(code)
     assert callable(fn)
     assert fn() == "callable"
+
+
+# ── _make_fn: missing run function ────────────────────────────────────────────
+
+def test_make_fn_missing_run_raises_key_error():
+    code = "def not_run(**kwargs):\n    return 'nope'"
+    with pytest.raises(KeyError):
+        _make_fn(code)
+
+
+# ── synthesise_tool: missing required key → returns None ─────────────────────
+
+@pytest.mark.asyncio
+async def test_synthesise_tool_missing_name_key_returns_none(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "TOOLS_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    from jarvis.tools.registry import ToolRegistry
+    reg = ToolRegistry()
+    bad_payload = '{"description": "no name key", "category": "general", "parameters": {}, "python_code": "def run(**k): return ok"}'
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=MagicMock(
+        content=[MagicMock(text=bad_payload)]
+    ))
+    tool = await synthesise_tool("missing name", client, reg)
+    assert tool is None
+
+
+@pytest.mark.asyncio
+async def test_synthesise_tool_persists_file_to_tools_dir(tmp_path, monkeypatch):
+    from jarvis.config import cfg
+    monkeypatch.setattr(cfg, "TOOLS_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    from jarvis.tools.registry import ToolRegistry
+    reg = ToolRegistry()
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=MagicMock(
+        content=[MagicMock(text=_valid_payload("persisted_tool"))]
+    ))
+    tool = await synthesise_tool("persist test", client, reg)
+    assert tool is not None
+    assert (tmp_path / "persisted_tool.py").exists()
+
+
+# ── _generate_image_hf: saves bytes to file ───────────────────────────────────
+
+def test_generate_image_hf_saves_file_on_success(tmp_path, monkeypatch):
+    monkeypatch.setattr("jarvis.tools.image_gen.cfg.HF_API_TOKEN", "test-token")
+    output_path = str(tmp_path / "out.png")
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+    with patch("requests.post", return_value=fake_resp):
+        out = _generate_image_hf("a cat", output_path=output_path)
+    assert Path(output_path).exists()
+    assert "saved to" in out
+
+
+# ── _describe_image: media_type mapping ──────────────────────────────────────
+
+def test_describe_image_uses_jpeg_for_jpg(tmp_path, monkeypatch):
+    img = tmp_path / "photo.jpg"
+    img.write_bytes(b"\xff\xd8\xff" + b"\x00" * 50)
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = MagicMock(
+        content=[MagicMock(text="A photo")]
+    )
+    with patch("anthropic.Anthropic", return_value=fake_client):
+        out = _describe_image(str(img))
+    assert out == "A photo"
+    call_kwargs = fake_client.messages.create.call_args.kwargs
+    image_content = call_kwargs["messages"][0]["content"][0]
+    assert image_content["source"]["media_type"] == "image/jpeg"
