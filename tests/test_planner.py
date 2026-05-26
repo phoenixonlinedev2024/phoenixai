@@ -340,3 +340,47 @@ async def test_ab_test_winner_default_on_missing_key():
     planner = TaskPlanner(client=client, memory=mem)
     winner, result = await planner.ab_test("task", "a", "b")
     assert winner == "A"
+
+
+# ── group_subtasks: 4-group case ─────────────────────────────────────────────
+
+def test_group_subtasks_four_groups():
+    """Groups are returned in sorted group-number order."""
+    planner = TaskPlanner(client=MagicMock(), memory=MagicMock())
+    subtasks = [
+        {"id": 4, "group": 4, "description": "d"},
+        {"id": 1, "group": 1, "description": "a"},
+        {"id": 3, "group": 3, "description": "c"},
+        {"id": 2, "group": 2, "description": "b"},
+    ]
+    groups = planner.group_subtasks(subtasks)
+    assert len(groups) == 4
+    assert [g[0]["description"] for g in groups] == ["a", "b", "c", "d"]
+
+
+# ── score_confidence: missing score key uses default ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_score_confidence_missing_score_key_returns_default():
+    """If API response has no 'score' key, .get() returns 0.7 as default."""
+    payload = '{"reason": "no score here"}'
+    client = _fake_client_returning(payload)
+    planner = TaskPlanner(client=client, memory=MagicMock())
+    score = await planner.score_confidence("task", "response")
+    assert score == pytest.approx(0.7)
+
+
+# ── ab_test: scores are returned in the result dict ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_ab_test_result_dict_contains_all_fields():
+    """ab_test returns the full result dict from the API."""
+    payload = '{"winner":"A","score_a":0.95,"score_b":0.45,"reason":"A is more detailed"}'
+    client = _fake_client_returning(payload)
+    mem = _fake_memory()
+    planner = TaskPlanner(client=client, memory=mem)
+    winner, result = await planner.ab_test("task", "A resp", "B resp")
+    assert winner == "A"
+    assert "score_a" in result
+    assert "score_b" in result
+    assert result["score_a"] == pytest.approx(0.95)
