@@ -381,3 +381,82 @@ def test_create_api_key(client):
     data = resp.json()
     assert data["key"].startswith("jvs_")
     assert data["role"] == "user"
+
+
+# ── parse_nl_schedule with unknown phrase ─────────────────────────────────────
+
+def test_parse_nl_schedule_unknown_phrase(client):
+    resp = client.get("/schedule/nl/parse", params={"phrase": "when pigs fly"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["phrase"] == "when pigs fly"
+    assert "cron" in data
+
+
+# ── /metrics/json endpoint ────────────────────────────────────────────────────
+
+def test_metrics_json_endpoint(client):
+    resp = client.get("/metrics/json")
+    assert resp.status_code == 200
+
+
+# ── /providers/health ─────────────────────────────────────────────────────────
+
+def test_providers_health_contains_anthropic(client):
+    resp = client.get("/providers/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "anthropic" in data
+
+
+# ── /session/new returns session_id ──────────────────────────────────────────
+
+def test_new_session_has_session_id(client):
+    resp = client.post("/session/new")
+    assert resp.status_code == 200
+    assert "session_id" in resp.json()
+
+
+# ── /trajectories/stats returns stats dict ───────────────────────────────────
+
+def test_trajectories_stats_ok(client):
+    resp = client.get("/trajectories/stats")
+    assert resp.status_code == 200
+
+
+# ── /trajectories/export returns message ─────────────────────────────────────
+
+def test_trajectories_export_returns_message(client, tmp_path):
+    resp = client.post("/trajectories/export", json={"output": str(tmp_path / "out.jsonl")})
+    assert resp.status_code == 200
+    assert "message" in resp.json()
+
+
+# ── /security/keys create returns name ───────────────────────────────────────
+
+def test_create_api_key_name_returned(client):
+    resp = client.post("/security/keys", json={"name": "my-app", "role": "admin"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "my-app"
+    assert data["role"] == "admin"
+
+
+# ── /memory/facts returns list ────────────────────────────────────────────────
+
+def test_memory_facts_returns_list(client):
+    resp = client.get("/memory/facts")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "facts" in data
+    assert isinstance(data["facts"], list)
+
+
+# ── /memory/lessons returns list ─────────────────────────────────────────────
+
+def test_memory_lessons_returns_list(client):
+    resp = client.get("/memory/lessons")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "lessons" in data
+    assert isinstance(data["lessons"], list)
