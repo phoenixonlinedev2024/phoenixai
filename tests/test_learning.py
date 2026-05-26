@@ -213,3 +213,58 @@ def test_build_context_prompt_only_lessons_excludes_facts_header(memory_store):
     prompt = engine.build_context_prompt()
     assert "Lessons Learned" in prompt
     assert "Known Facts" not in prompt
+
+
+# ── Additional reflect / context tests ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_reflect_api_error_prints_message(memory_store, monkeypatch, capsys):
+    monkeypatch.setattr("jarvis.memory.learning.cfg.LEARNING_ENABLED", True)
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=ValueError("bad request"))
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "hi"}], client=client)
+    assert result == {}
+    out = capsys.readouterr().out
+    assert "Reflection error" in out
+
+
+@pytest.mark.asyncio
+async def test_reflect_result_contains_all_keys(memory_store, monkeypatch):
+    monkeypatch.setattr("jarvis.memory.learning.cfg.LEARNING_ENABLED", True)
+    client = _fake_client_returning(
+        '{"lessons": ["take notes"], "facts": {"editor": "vim"}, "capability_gaps": ["pdf"]}'
+    )
+    engine = LearningEngine(memory_store)
+    result = await engine.reflect([{"role": "user", "content": "x"}], client=client)
+    assert "lessons" in result
+    assert "facts" in result
+    assert "capability_gaps" in result
+    assert result["lessons"] == ["take notes"]
+    assert result["facts"]["editor"] == "vim"
+
+
+def test_build_context_prompt_contains_fact_value(memory_store):
+    memory_store.store_fact("project", "JARVIS dev")
+    engine = LearningEngine(memory_store)
+    prompt = engine.build_context_prompt()
+    assert "JARVIS dev" in prompt
+
+
+def test_build_context_prompt_contains_lesson_text(memory_store):
+    memory_store.store_lesson("never skip tests before shipping")
+    engine = LearningEngine(memory_store)
+    prompt = engine.build_context_prompt()
+    assert "never skip tests" in prompt
+
+
+@pytest.mark.asyncio
+async def test_reflect_empty_lessons_no_lessons_stored(memory_store, monkeypatch):
+    monkeypatch.setattr("jarvis.memory.learning.cfg.LEARNING_ENABLED", True)
+    client = _fake_client_returning(
+        '{"lessons": [], "facts": {"key": "val"}, "capability_gaps": []}'
+    )
+    engine = LearningEngine(memory_store)
+    await engine.reflect([{"role": "user", "content": "hi"}], client=client)
+    assert memory_store.get_lessons() == []
+    assert memory_store.recall_fact("key") == "val"
